@@ -1,0 +1,18 @@
+include(GoogleTest)
+
+function(mocap_add_test TEST_NAME TEST_SOURCE)
+    add_executable(${TEST_NAME} ${TEST_SOURCE})
+    target_link_libraries(${TEST_NAME} PRIVATE mocap_lib GTest::gtest_main GTest::gmock)
+    gtest_discover_tests(${TEST_NAME})
+endfunction()
+
+mocap_add_test(test_types test_types.cpp)
+mocap_add_test(test_triangulation test_triangulation.cpp)
+mocap_add_test(test_skeleton_solver test_skeleton_solver.cpp)
+mocap_add_test(test_temporal_filter test_temporal_filter.cpp)
+mocap_add_test(test_binary_io test_binary_io.cpp)
+mocap_add_test(test_config test_config.cpp)
+mocap_add_test(test_skeleton_definition test_skeleton_definition.cpp)
+mocap_add_test(test_bvh_exporter test_bvh_exporter.cpp)
+mocap_add_test(test_csv_json_exporter test_csv_json_exporter.cpp)
+mocap_add_test(test_person_tracker test_person_tracker.cpp)

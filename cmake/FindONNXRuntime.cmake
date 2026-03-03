@@ -1,0 +1,43 @@
+# FindONNXRuntime.cmake
+# Finds ONNX Runtime C++ library
+#
+# Sets:
+#   ONNXRuntime_FOUND
+#   ONNXRuntime_INCLUDE_DIRS
+#   ONNXRuntime_LIBRARIES
+
+find_path(ONNXRuntime_INCLUDE_DIR
+    NAMES onnxruntime_cxx_api.h
+    PATH_SUFFIXES onnxruntime/core/session
+    HINTS
+        ${ONNXRUNTIME_ROOT}
+        $ENV{ONNXRUNTIME_ROOT}
+        /usr/local/include
+        /usr/include
+)
+
+find_library(ONNXRuntime_LIBRARY
+    NAMES onnxruntime
+    HINTS
+        ${ONNXRUNTIME_ROOT}
+        $ENV{ONNXRUNTIME_ROOT}
+        /usr/local/lib
+        /usr/lib
+)
+
+include(FindPackageHandleStandardArgs)
+find_package_handle_standard_args(ONNXRuntime
+    REQUIRED_VARS ONNXRuntime_LIBRARY ONNXRuntime_INCLUDE_DIR
+)
+
+if(ONNXRuntime_FOUND)
+    set(ONNXRuntime_INCLUDE_DIRS ${ONNXRuntime_INCLUDE_DIR})
+    set(ONNXRuntime_LIBRARIES ${ONNXRuntime_LIBRARY})
+    if(NOT TARGET ONNXRuntime::ONNXRuntime)
+        add_library(ONNXRuntime::ONNXRuntime UNKNOWN IMPORTED)
+        set_target_properties(ONNXRuntime::ONNXRuntime PROPERTIES
+            IMPORTED_LOCATION "${ONNXRuntime_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${ONNXRuntime_INCLUDE_DIR}"
+        )
+    endif()
+endif()
