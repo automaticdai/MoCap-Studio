@@ -16,7 +16,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets)
 
 # OpenCV
-find_package(OpenCV 4.8 REQUIRED COMPONENTS core imgproc imgcodecs videoio calib3d)
+find_package(OpenCV 4.0 REQUIRED COMPONENTS core imgproc imgcodecs videoio calib3d)
 
 # ONNX Runtime
 find_package(ONNXRuntime REQUIRED)
@@ -32,16 +32,14 @@ if(NOT Eigen3_FOUND)
     FetchContent_MakeAvailable(eigen)
 endif()
 
-# spdlog
-find_package(spdlog 1.12 QUIET)
-if(NOT spdlog_FOUND)
-    include(FetchContent)
-    FetchContent_Declare(spdlog
-        GIT_REPOSITORY https://github.com/gabime/spdlog.git
-        GIT_TAG v1.14.1
-    )
-    FetchContent_MakeAvailable(spdlog)
-endif()
+# spdlog (always use FetchContent to avoid system fmt incompatibilities)
+include(FetchContent)
+FetchContent_Declare(spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG v1.14.1
+)
+set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(spdlog)
 
 # yaml-cpp
 find_package(yaml-cpp 0.7 QUIET)
@@ -65,7 +63,7 @@ FetchContent_MakeAvailable(json)
 # ezc3d
 FetchContent_Declare(ezc3d
     GIT_REPOSITORY https://github.com/pyomeca/ezc3d.git
-    GIT_TAG master
+    GIT_TAG Release_1.5.8
 )
 FetchContent_MakeAvailable(ezc3d)
 
@@ -81,6 +79,8 @@ if(MOCAP_BUILD_TESTS)
         GIT_TAG v1.14.0
     )
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF)
     FetchContent_MakeAvailable(googletest)
+    set(BUILD_SHARED_LIBS ON)
     add_subdirectory(tests)
 endif()

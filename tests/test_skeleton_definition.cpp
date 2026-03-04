@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include "core/skeleton_definition.h"
 
 using namespace mocap;

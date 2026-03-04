@@ -50,6 +50,7 @@ private:
     // Clamp rotation to joint limits
     Quaternion clampToLimits(const Quaternion& rotation, const JointLimits& limits);
 
+public:
     // Convert quaternion to Euler angles (XYZ order, degrees)
     static Vec3f quaternionToEuler(const Quaternion& q);
 };

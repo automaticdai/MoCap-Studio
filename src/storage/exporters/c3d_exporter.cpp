@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <set>
+#include <unordered_map>
 
 namespace mocap {
 
@@ -47,9 +48,15 @@ void C3dExporter::exportPose3D(
     // Create C3D object
     ezc3d::c3d c3d;
 
-    // Set parameters
-    c3d.parameter("POINT:RATE").set(static_cast<float>(fps));
-    c3d.parameter("POINT:LABELS").set(marker_names);
+    // Set POINT:RATE
+    ezc3d::ParametersNS::GroupNS::Parameter rate_param("RATE");
+    rate_param.set(static_cast<float>(fps));
+    c3d.parameter("POINT", rate_param);
+
+    // Set POINT:LABELS
+    ezc3d::ParametersNS::GroupNS::Parameter labels_param("LABELS");
+    labels_param.set(marker_names);
+    c3d.parameter("POINT", labels_param);
 
     // Add frames
     for (const auto& [ts, poses] : frames) {
@@ -62,7 +69,6 @@ void C3dExporter::exportPose3D(
             pt.x(0.0);
             pt.y(0.0);
             pt.z(0.0);
-            // Residual < 0 means point is not visible
             pt.residual(-1.0);
             pts.point(pt);
         }

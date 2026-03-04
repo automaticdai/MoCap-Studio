@@ -8,21 +8,24 @@
 
 find_path(ONNXRuntime_INCLUDE_DIR
     NAMES onnxruntime_cxx_api.h
-    PATH_SUFFIXES onnxruntime/core/session
+    PATH_SUFFIXES onnxruntime/core/session include
     HINTS
         ${ONNXRUNTIME_ROOT}
         $ENV{ONNXRUNTIME_ROOT}
-        /usr/local/include
-        /usr/include
+        /opt/onnxruntime
+        /usr/local
+        /usr
 )
 
 find_library(ONNXRuntime_LIBRARY
     NAMES onnxruntime
+    PATH_SUFFIXES lib
     HINTS
         ${ONNXRUNTIME_ROOT}
         $ENV{ONNXRUNTIME_ROOT}
-        /usr/local/lib
-        /usr/lib
+        /opt/onnxruntime
+        /usr/local
+        /usr
 )
 
 include(FindPackageHandleStandardArgs)

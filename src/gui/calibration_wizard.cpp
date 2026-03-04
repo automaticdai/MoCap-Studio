@@ -1,5 +1,6 @@
 #include "gui/calibration_wizard.h"
 #include <QCheckBox>
+#include <QHeaderView>
 
 namespace mocap {
 

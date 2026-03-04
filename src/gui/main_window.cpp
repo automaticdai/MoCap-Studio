@@ -548,7 +548,8 @@ void MainWindow::runExport(const std::string& format, bool l1, bool l2, bool l3,
         if (start_frame > 0 || end_frame < static_cast<int>(frames.size()) - 1) {
             int s = std::min(start_frame, static_cast<int>(frames.size()));
             int e = std::min(end_frame + 1, static_cast<int>(frames.size()));
-            frames = decltype(frames)(frames.begin() + s, frames.begin() + e);
+            frames.erase(frames.begin() + e, frames.end());
+            frames.erase(frames.begin(), frames.begin() + s);
         }
     };
 

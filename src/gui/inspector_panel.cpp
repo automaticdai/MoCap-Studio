@@ -132,9 +132,9 @@ void InspectorPanel::displayPersonInfo(const SkeletonPose& skeleton) {
             : QString("Joint %1").arg(jr.joint_index);
 
         auto* joint = addTreeGroup(name, joints);
-        addTreeItem("Euler X", QString::number(jr.euler_degrees.x(), 'f', 1) + "\xC2\xB0", joint);
-        addTreeItem("Euler Y", QString::number(jr.euler_degrees.y(), 'f', 1) + "\xC2\xB0", joint);
-        addTreeItem("Euler Z", QString::number(jr.euler_degrees.z(), 'f', 1) + "\xC2\xB0", joint);
+        addTreeItem("Euler X", QString::number(jr.euler_xyz.x(), 'f', 1) + "\xC2\xB0", joint);
+        addTreeItem("Euler Y", QString::number(jr.euler_xyz.y(), 'f', 1) + "\xC2\xB0", joint);
+        addTreeItem("Euler Z", QString::number(jr.euler_xyz.z(), 'f', 1) + "\xC2\xB0", joint);
     }
 }
 
@@ -199,9 +199,9 @@ void InspectorPanel::displayJointInfo(const SkeletonPose& skeleton, int joint_in
     addTreeItem("Z", QString::number(jr->rotation.z(), 'f', 4), rot);
 
     auto* euler = addTreeGroup("Rotation (Euler)");
-    addTreeItem("X", QString::number(jr->euler_degrees.x(), 'f', 1) + "\xC2\xB0", euler);
-    addTreeItem("Y", QString::number(jr->euler_degrees.y(), 'f', 1) + "\xC2\xB0", euler);
-    addTreeItem("Z", QString::number(jr->euler_degrees.z(), 'f', 1) + "\xC2\xB0", euler);
+    addTreeItem("X", QString::number(jr->euler_xyz.x(), 'f', 1) + "\xC2\xB0", euler);
+    addTreeItem("Y", QString::number(jr->euler_xyz.y(), 'f', 1) + "\xC2\xB0", euler);
+    addTreeItem("Z", QString::number(jr->euler_xyz.z(), 'f', 1) + "\xC2\xB0", euler);
 
     // Joint limits
     if (joint_index < skeleton_def_.jointCount()) {
