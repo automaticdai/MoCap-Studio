@@ -12,6 +12,7 @@ public:
     ~OnnxPoseEstimator() override;
 
     bool initialize(const std::string& model_path, const std::string& device) override;
+    bool isInitialized() const override { return initialized_; }
     std::vector<Raw2DPose> estimate(const cv::Mat& image) override;
     std::string modelName() const override;
 
