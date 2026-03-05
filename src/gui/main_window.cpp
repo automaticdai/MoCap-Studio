@@ -6,6 +6,8 @@
 #include "gui/session_dialog.h"
 #include "gui/calibration_wizard.h"
 #include "gui/export_dialog.h"
+#include "gui/camera_management_dialog.h"
+#include "gui/settings_dialog.h"
 
 #include "capture/usb_camera_source.h"
 #include "capture/ip_camera_source.h"
@@ -63,6 +65,9 @@ void MainWindow::setupMenuBar() {
     auto* fileMenu = menuBar()->addMenu("&File");
     fileMenu->addAction("&New Session...", this, &MainWindow::onNewSession, QKeySequence::New);
     fileMenu->addAction("&Open Session...", this, &MainWindow::onOpenSession, QKeySequence::Open);
+    fileMenu->addSeparator();
+    fileMenu->addAction("&Settings...", this, &MainWindow::onSettings,
+                        QKeySequence(Qt::CTRL | Qt::Key_Comma));
     fileMenu->addSeparator();
     fileMenu->addAction("E&xit", this, &QWidget::close, QKeySequence::Quit);
 
@@ -176,6 +181,7 @@ void MainWindow::setupConnections() {
 }
 
 void MainWindow::loadConfig(const std::string& path) {
+    config_path_ = path;
     try {
         config_ = AppConfig::load(path);
         spdlog::info("Loaded configuration from {}", path);
@@ -606,13 +612,33 @@ void MainWindow::runExport(const std::string& format, bool l1, bool l2, bool l3,
 // --- Camera Setup & Calibration ---
 
 void MainWindow::onCameraSetup() {
-    QMessageBox::information(this, "Camera Setup",
-        "Camera configuration is managed via config.yaml.\n\n"
-        "Add camera entries under the 'cameras' section:\n"
-        "  - id: cam0\n"
-        "    type: usb\n"
-        "    device_index: 0\n"
-        "    resolution: [1920, 1080]");
+    if (capturing_) {
+        QMessageBox::warning(this, "Camera Setup",
+            "Cannot modify cameras while capturing.\n"
+            "Stop capture first.");
+        return;
+    }
+
+    CameraManagementDialog dialog(config_.cameras, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    auto new_cameras = dialog.result();
+
+    // Remove all existing cameras from broker
+    for (const auto& cam : config_.cameras) {
+        frame_broker_->removeCamera(cam.id);
+    }
+
+    // Update config and save
+    config_.cameras = new_cameras;
+    config_.save(config_path_);
+
+    // Reinitialize cameras from updated config
+    initializeCamerasFromConfig();
+
+    spdlog::info("Camera configuration updated ({} cameras)", config_.cameras.size());
+    statusBar()->showMessage(QString("Camera configuration updated (%1 cameras)")
+                                 .arg(config_.cameras.size()));
 }
 
 void MainWindow::onCalibrate() {
@@ -645,6 +671,68 @@ void MainWindow::onCalibrate() {
                 extrinsics[i].saveToJson(path);
             }
             spdlog::info("Saved calibration to {}", calib_dir);
+        }
+    }
+}
+
+void MainWindow::onSettings() {
+    SettingsDialog dialog(config_, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    AppConfig old_config = config_;
+    config_ = dialog.result();
+    config_.save(config_path_);
+    applyConfig(old_config, config_);
+
+    spdlog::info("Settings updated and saved to {}", config_path_);
+    statusBar()->showMessage("Settings saved");
+}
+
+void MainWindow::applyConfig(const AppConfig& old_cfg, const AppConfig& new_cfg) {
+    // Capture settings
+    if (old_cfg.capture.max_sync_skew_ms != new_cfg.capture.max_sync_skew_ms) {
+        frame_broker_->setMaxSyncSkewMs(new_cfg.capture.max_sync_skew_ms);
+    }
+
+    // Triangulation settings
+    if (old_cfg.triangulation.min_views != new_cfg.triangulation.min_views) {
+        triangulator_->setMinViews(new_cfg.triangulation.min_views);
+    }
+    if (old_cfg.triangulation.ransac_enabled != new_cfg.triangulation.ransac_enabled) {
+        triangulator_->setRansacEnabled(new_cfg.triangulation.ransac_enabled);
+    }
+    if (old_cfg.triangulation.ransac_threshold_px != new_cfg.triangulation.ransac_threshold_px) {
+        triangulator_->setRansacThreshold(new_cfg.triangulation.ransac_threshold_px);
+    }
+
+    // Temporal filter — recreate if cutoff or sample rate changed
+    if (old_cfg.triangulation.filter_cutoff_hz != new_cfg.triangulation.filter_cutoff_hz ||
+        old_cfg.capture.target_fps != new_cfg.capture.target_fps) {
+        temporal_filter_ = std::make_unique<TemporalFilter>(
+            TemporalFilter::Type::Butterworth,
+            new_cfg.triangulation.filter_cutoff_hz,
+            new_cfg.capture.target_fps);
+    }
+
+    // Skeleton settings
+    if (old_cfg.skeleton.ik_solver != new_cfg.skeleton.ik_solver) {
+        skeleton_solver_->setSolverType(
+            new_cfg.skeleton.ik_solver == "optimisation"
+                ? SkeletonSolver::SolverType::Optimisation
+                : SkeletonSolver::SolverType::Analytical);
+    }
+    if (old_cfg.skeleton.joint_limits_enabled != new_cfg.skeleton.joint_limits_enabled) {
+        skeleton_solver_->setJointLimitsEnabled(new_cfg.skeleton.joint_limits_enabled);
+    }
+
+    // GUI render layers
+    if (old_cfg.gui.default_render_layers != new_cfg.gui.default_render_layers) {
+        for (const auto& layer : {"grid", "markers", "skeleton", "trails",
+                                   "camera_frustums", "bounding_volumes"}) {
+            bool visible = std::find(new_cfg.gui.default_render_layers.begin(),
+                                     new_cfg.gui.default_render_layers.end(),
+                                     layer) != new_cfg.gui.default_render_layers.end();
+            mocap_canvas_->setRenderLayerVisible(QString::fromUtf8(layer), visible);
         }
     }
 }

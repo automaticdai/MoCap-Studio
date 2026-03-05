@@ -45,6 +45,9 @@ set(MOCAP_GUI_SOURCES
     gui/session_dialog.cpp
     gui/calibration_wizard.cpp
     gui/export_dialog.cpp
+    gui/camera_edit_dialog.cpp
+    gui/camera_management_dialog.cpp
+    gui/settings_dialog.cpp
 )
 
 # Optional Blackmagic source

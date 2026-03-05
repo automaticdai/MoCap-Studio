@@ -39,6 +39,7 @@ private slots:
     void onExport();
     void onCameraSetup();
     void onCalibrate();
+    void onSettings();
     void onAbout();
 
     void onFrameSetReady(std::shared_ptr<FrameSet> frameSet);
@@ -56,6 +57,7 @@ private:
     void setupDockWidgets();
     void setupConnections();
     void loadConfig(const std::string& path);
+    void applyConfig(const AppConfig& old_config, const AppConfig& new_config);
 
     void processFrameSet(std::shared_ptr<FrameSet> frameSet);
     void initializeCamerasFromConfig();
@@ -107,6 +109,7 @@ private:
 
     // Configuration
     AppConfig config_;
+    std::string config_path_;
     bool capturing_ = false;
     bool recording_ = false;
     double capture_start_time_ = 0.0;
