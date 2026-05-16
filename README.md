@@ -113,8 +113,9 @@ Edit `config.yaml` to configure cameras, pose estimation, triangulation, and ske
 
 ```yaml
 capture:
-  target_fps: 60.0
-  max_sync_skew_ms: 5.0
+  target_fps: 60
+  sync_mode: "software"
+  max_sync_skew_ms: 5
 
 cameras:
   - id: cam0
@@ -127,19 +128,28 @@ cameras:
     resolution: [1920, 1080]
 
 pose_estimation:
-  model: "models/rtmpose_l.onnx"
-  device: "cuda"
+  backend: "onnxruntime"
+  model: "rtmpose_l_body25.onnx"
+  device: "cuda:0"
+  detection_threshold: 0.5
+  keypoint_threshold: 0.3
 
 triangulation:
   min_views: 2
   ransac_enabled: true
   ransac_threshold_px: 5.0
+  temporal_filter: "butterworth"
   filter_cutoff_hz: 6.0
 
 skeleton:
   definition: "body_25"
   ik_solver: "analytical"
   joint_limits_enabled: true
+
+gui:
+  canvas_fps: 60
+  default_render_layers: ["grid", "markers", "skeleton"]
+  colour_palette: "oklab_12"
 ```
 
 ## Export Formats
@@ -172,4 +182,4 @@ cmake/              # Custom find modules
 
 ## License
 
-TBD
+MIT — see [LICENSE](LICENSE).

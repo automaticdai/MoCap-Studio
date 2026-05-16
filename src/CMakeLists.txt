@@ -2,6 +2,7 @@ set(MOCAP_CORE_SOURCES
     core/config.cpp
     core/skeleton_definition.cpp
     core/camera_intrinsics.cpp
+    core/intrinsics_calibrator.cpp
 )
 
 set(MOCAP_CAPTURE_SOURCES
@@ -88,6 +89,10 @@ endif()
 
 if(MOCAP_ENABLE_BLACKMAGIC)
     target_compile_definitions(mocap_lib PUBLIC MOCAP_HAS_BLACKMAGIC)
+endif()
+
+if(MOCAP_ENABLE_DIRECTML)
+    target_compile_definitions(mocap_lib PUBLIC MOCAP_USE_DIRECTML)
 endif()
 
 # Executable

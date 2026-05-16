@@ -642,35 +642,36 @@ void MainWindow::onCameraSetup() {
 }
 
 void MainWindow::onCalibrate() {
-    // Gather active camera sources
-    std::vector<std::shared_ptr<ICameraSource>> sources;
-    // Note: in production, collect sources from frame_broker_
-
-    if (sources.empty()) {
+    if (config_.cameras.empty()) {
         QMessageBox::information(this, "No Cameras",
                                  "Please add cameras in config.yaml before calibrating.");
         return;
     }
 
-    CalibrationWizard wizard(sources, this);
-    if (wizard.exec() == QDialog::Accepted) {
-        auto intrinsics = wizard.intrinsicsResults();
-        auto extrinsics = wizard.extrinsicsResults();
+    // Stop the live pipeline so the wizard can take exclusive access to the
+    // camera devices for its lifetime.
+    const bool was_capturing = capturing_;
+    if (was_capturing) onStopCapture();
 
-        if (session_manager_->isOpen()) {
-            std::string calib_dir = session_manager_->calibrationDir();
-            // Save calibration files
-            for (size_t i = 0; i < intrinsics.size(); ++i) {
-                std::string path = calib_dir + "/camera_" +
-                                   std::to_string(i) + "_intrinsics.yaml";
-                intrinsics[i].saveToYaml(path);
-            }
-            for (size_t i = 0; i < extrinsics.size(); ++i) {
-                std::string path = calib_dir + "/camera_" +
-                                   std::to_string(i) + "_extrinsics.json";
-                extrinsics[i].saveToJson(path);
+    CalibrationWizard wizard(config_.cameras, this);
+    if (wizard.exec() == QDialog::Accepted) {
+        const auto intrinsics = wizard.intrinsicsResults();
+        const auto& selected = wizard.selectedCameraIndices();
+
+        if (session_manager_->isOpen() && !intrinsics.empty()) {
+            const std::string calib_dir = session_manager_->calibrationDir();
+            for (size_t slot = 0; slot < intrinsics.size(); ++slot) {
+                if (intrinsics[slot].image_size.area() == 0) continue;  // skipped/failed
+                const int cam_idx = selected[slot];
+                const std::string path = calib_dir + "/" +
+                                         config_.cameras[cam_idx].id + "_intrinsics.yaml";
+                intrinsics[slot].saveToYaml(path);
             }
             spdlog::info("Saved calibration to {}", calib_dir);
+        } else if (!session_manager_->isOpen()) {
+            QMessageBox::information(this, "No Session",
+                                     "Calibration succeeded but no session is open. "
+                                     "Open or create a session to persist the results.");
         }
     }
 }

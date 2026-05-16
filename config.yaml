@@ -8,7 +8,7 @@ cameras: []
 pose_estimation:
   backend: "onnxruntime"
   model: "rtmpose_l_body25.onnx"
-  device: "cuda:0"
+  device: "auto"
   detection_threshold: 0.5
   keypoint_threshold: 0.3
 

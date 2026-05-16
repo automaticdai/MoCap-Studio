@@ -3,9 +3,50 @@
 #include <spdlog/spdlog.h>
 #include <numeric>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
+#ifdef MOCAP_USE_DIRECTML
+#include <dml_provider_factory.h>
+#endif
+
 namespace mocap {
+
+namespace {
+
+struct ProviderAttempt {
+    std::string name;  // "cuda", "dml", or "cpu"
+    int device_id = 0;
+};
+
+// Translate a config "device" string into the ordered list of execution providers
+// to try. The list always ends in "cpu" so that initialization succeeds on any host.
+std::vector<ProviderAttempt> parseDeviceSpec(const std::string& spec) {
+    auto extract_id = [](const std::string& s) {
+        auto colon = s.find(':');
+        if (colon == std::string::npos) return 0;
+        try { return std::stoi(s.substr(colon + 1)); } catch (...) { return 0; }
+    };
+
+    std::vector<ProviderAttempt> out;
+    if (spec == "auto" || spec.empty()) {
+        out.push_back({"cuda", 0});
+#ifdef MOCAP_USE_DIRECTML
+        out.push_back({"dml", 0});
+#endif
+    } else if (spec.rfind("cuda", 0) == 0) {
+        out.push_back({"cuda", extract_id(spec)});
+    } else if (spec.rfind("dml", 0) == 0) {
+        out.push_back({"dml", extract_id(spec)});
+    } else if (spec != "cpu") {
+        spdlog::warn("ONNX Runtime: unknown device spec '{}', using CPU", spec);
+    }
+    out.push_back({"cpu", 0});
+    return out;
+}
+
+}  // namespace
+
 
 const std::vector<std::string> OnnxPoseEstimator::BODY25_NAMES = {
     "nose", "neck", "right_shoulder", "right_elbow", "right_wrist",
@@ -24,30 +65,53 @@ OnnxPoseEstimator::~OnnxPoseEstimator() = default;
 bool OnnxPoseEstimator::initialize(const std::string& model_path, const std::string& device) {
     try {
         env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "MoCapPose");
+    } catch (const Ort::Exception& e) {
+        spdlog::error("ONNX Runtime env init failed: {}", e.what());
+        return false;
+    }
 
-        Ort::SessionOptions session_opts;
-        session_opts.SetIntraOpNumThreads(4);
-        session_opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    // Try each provider in order; first successful session wins. CPU is always last.
+    for (const auto& attempt : parseDeviceSpec(device)) {
+        try {
+            Ort::SessionOptions session_opts;
+            session_opts.SetIntraOpNumThreads(4);
+            session_opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
-        // Configure execution provider
-        if (device.find("cuda") != std::string::npos) {
-            OrtCUDAProviderOptions cuda_opts;
-            cuda_opts.device_id = 0;
-
-            // Parse device index from "cuda:N"
-            auto colon_pos = device.find(':');
-            if (colon_pos != std::string::npos) {
-                cuda_opts.device_id = std::stoi(device.substr(colon_pos + 1));
+            if (attempt.name == "cuda") {
+                OrtCUDAProviderOptions cuda_opts;
+                cuda_opts.device_id = attempt.device_id;
+                session_opts.AppendExecutionProvider_CUDA(cuda_opts);
+            } else if (attempt.name == "dml") {
+#ifdef MOCAP_USE_DIRECTML
+                session_opts.DisableMemPattern();
+                session_opts.SetExecutionMode(ORT_SEQUENTIAL);
+                Ort::ThrowOnError(
+                    OrtSessionOptionsAppendExecutionProvider_DML(session_opts, attempt.device_id));
+#else
+                continue;  // DirectML not compiled in
+#endif
             }
+            // For "cpu", append nothing — ORT's default CPU EP is always available.
 
-            session_opts.AppendExecutionProvider_CUDA(cuda_opts);
-            spdlog::info("ONNX Runtime: using CUDA device {}", cuda_opts.device_id);
-        } else {
-            spdlog::info("ONNX Runtime: using CPU");
+            session_ = std::make_unique<Ort::Session>(*env_, model_path.c_str(), session_opts);
+            active_provider_ = attempt.name == "cpu"
+                ? "cpu"
+                : attempt.name + ":" + std::to_string(attempt.device_id);
+            spdlog::info("ONNX Runtime: using execution provider '{}'", active_provider_);
+            break;
+        } catch (const Ort::Exception& e) {
+            spdlog::warn("ONNX Runtime: provider '{}' unavailable ({}); trying next",
+                         attempt.name, e.what());
+            session_.reset();
         }
+    }
 
-        session_ = std::make_unique<Ort::Session>(*env_, model_path.c_str(), session_opts);
+    if (!session_) {
+        spdlog::error("ONNX Runtime: no execution provider could be initialized");
+        return false;
+    }
 
+    try {
         // Get input info
         size_t num_inputs = session_->GetInputCount();
         input_names_.clear();
@@ -83,12 +147,29 @@ bool OnnxPoseEstimator::initialize(const std::string& model_path, const std::str
 
         spdlog::info("ONNX pose model loaded: {} (input: {}x{})",
                      model_path, input_width_, input_height_);
-        return true;
-
     } catch (const Ort::Exception& e) {
         spdlog::error("ONNX Runtime error: {}", e.what());
+        initialized_ = false;
+        session_.reset();
         return false;
     }
+
+    warmup();
+    return true;
+}
+
+void OnnxPoseEstimator::warmup() {
+    if (!initialized_) return;
+    cv::Mat dummy = cv::Mat::zeros(input_height_, input_width_, CV_8UC3);
+    const auto t0 = std::chrono::steady_clock::now();
+    estimate(dummy);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    spdlog::info("ONNX Runtime: warmup inference took {:.1f}ms on '{}'",
+                 ms, active_provider_);
+    // Don't let the warmup pollute the running average.
+    inference_count_ = 0;
+    inference_total_ms_ = 0.0;
 }
 
 cv::Mat OnnxPoseEstimator::preprocess(const cv::Mat& image) {
@@ -140,7 +221,8 @@ std::vector<Raw2DPose> OnnxPoseEstimator::estimate(const cv::Mat& image) {
             input_shape.size()
         );
 
-        // Run inference
+        // Run inference (timed for periodic perf logging)
+        const auto t0 = std::chrono::steady_clock::now();
         auto outputs = session_->Run(
             Ort::RunOptions{nullptr},
             input_name_ptrs_.data(),
@@ -149,6 +231,14 @@ std::vector<Raw2DPose> OnnxPoseEstimator::estimate(const cv::Mat& image) {
             output_name_ptrs_.data(),
             output_name_ptrs_.size()
         );
+        const auto t1 = std::chrono::steady_clock::now();
+
+        inference_total_ms_ += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        if (++inference_count_ % 60 == 0) {
+            spdlog::info("ONNX Runtime: {} avg {:.1f}ms over last 60 inferences",
+                         active_provider_, inference_total_ms_ / 60.0);
+            inference_total_ms_ = 0.0;
+        }
 
         return postprocess(outputs, scale_x, scale_y);
 

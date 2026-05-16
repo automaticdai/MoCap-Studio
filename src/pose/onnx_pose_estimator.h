@@ -44,6 +44,8 @@ private:
         float scale_x, float scale_y
     );
 
+    void warmup();
+
     std::unique_ptr<Ort::Env> env_;
     std::unique_ptr<Ort::Session> session_;
     Ort::AllocatorWithDefaultOptions allocator_;
@@ -61,6 +63,9 @@ private:
     float keypoint_threshold_ = 0.3f;
 
     std::string model_name_;
+    std::string active_provider_;
+    std::uint64_t inference_count_ = 0;
+    double inference_total_ms_ = 0.0;
     bool initialized_ = false;
 
     static const std::vector<std::string> BODY25_NAMES;

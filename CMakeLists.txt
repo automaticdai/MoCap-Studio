@@ -9,6 +9,7 @@ set(CMAKE_AUTOUIC ON)
 
 option(MOCAP_BUILD_TESTS "Build tests" ON)
 option(MOCAP_ENABLE_BLACKMAGIC "Enable Blackmagic DeckLink support" OFF)
+option(MOCAP_ENABLE_DIRECTML "Enable ONNX Runtime DirectML execution provider (Windows GPU)" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
