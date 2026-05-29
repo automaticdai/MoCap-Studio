@@ -5,27 +5,35 @@
 #   ONNXRuntime_FOUND
 #   ONNXRuntime_INCLUDE_DIRS
 #   ONNXRuntime_LIBRARIES
+#
+# Set ONNXRUNTIME_ROOT (CMake var or env var) to point at a custom install.
+# Versioned prebuilt archives extracted under /opt or /usr/local
+# (e.g. /opt/onnxruntime-linux-x64-gpu-1.17.0) are discovered automatically.
+
+file(GLOB _onnxruntime_versioned_dirs
+    /opt/onnxruntime*
+    /usr/local/onnxruntime*
+)
+
+set(_onnxruntime_hints
+    ${ONNXRUNTIME_ROOT}
+    $ENV{ONNXRUNTIME_ROOT}
+    ${_onnxruntime_versioned_dirs}
+    /opt/onnxruntime
+    /usr/local
+    /usr
+)
 
 find_path(ONNXRuntime_INCLUDE_DIR
     NAMES onnxruntime_cxx_api.h
     PATH_SUFFIXES onnxruntime/core/session include
-    HINTS
-        ${ONNXRUNTIME_ROOT}
-        $ENV{ONNXRUNTIME_ROOT}
-        /opt/onnxruntime
-        /usr/local
-        /usr
+    HINTS ${_onnxruntime_hints}
 )
 
 find_library(ONNXRuntime_LIBRARY
     NAMES onnxruntime
     PATH_SUFFIXES lib
-    HINTS
-        ${ONNXRUNTIME_ROOT}
-        $ENV{ONNXRUNTIME_ROOT}
-        /opt/onnxruntime
-        /usr/local
-        /usr
+    HINTS ${_onnxruntime_hints}
 )
 
 include(FindPackageHandleStandardArgs)

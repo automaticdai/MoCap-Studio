@@ -52,6 +52,12 @@ if(NOT yaml-cpp_FOUND)
     )
     FetchContent_MakeAvailable(yaml-cpp)
 endif()
+# yaml-cpp 0.7 (e.g. the Ubuntu system package) exports only the unnamespaced
+# "yaml-cpp" target; 0.8+ adds the "yaml-cpp::yaml-cpp" alias. Normalise so the
+# rest of the build can always link the namespaced name.
+if(TARGET yaml-cpp AND NOT TARGET yaml-cpp::yaml-cpp)
+    add_library(yaml-cpp::yaml-cpp ALIAS yaml-cpp)
+endif()
 
 # nlohmann/json (header-only)
 include(FetchContent)
