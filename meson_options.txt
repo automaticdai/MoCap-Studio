@@ -1,0 +1,8 @@
+option('tests', type : 'boolean', value : true,
+       description : 'Build the Google Test suite under tests/')
+option('blackmagic', type : 'boolean', value : false,
+       description : 'Compile the Blackmagic DeckLink capture backend (currently a stub)')
+option('directml', type : 'boolean', value : false,
+       description : 'Enable the ONNX Runtime DirectML execution provider (Windows GPU)')
+option('onnxruntime_root', type : 'string', value : '',
+       description : 'Path to a custom ONNX Runtime install (expects lib/ and include/ underneath)')

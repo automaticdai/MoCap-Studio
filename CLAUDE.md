@@ -10,35 +10,50 @@ MoCap Studio is a desktop application for real-time, markerless human motion cap
 
 ## Build Commands
 
-C++17 project using CMake >= 3.22 with Qt6 integration:
+C++17 project using Meson (>= 0.57) + Ninja with Qt6 integration:
 
 ```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --parallel
+meson setup build
+meson compile -C build
 ```
+
+On Ubuntu/Debian, Qt6 ships no pkg-config files and the generic `qmake` resolves
+to Qt5, so point Meson at the Qt6 tools with the bundled native file:
+
+```bash
+meson setup build --native-file meson/ubuntu-qt6.ini
+```
+
+Dependencies resolve system-first, falling back to auto-downloaded subprojects
+(wrap files under `subprojects/`): Eigen, yaml-cpp, nlohmann/json, ezc3d (built
+via its CMake through Meson's `cmake` module), GoogleTest, and spdlog (always
+built from its subproject with a pinned `fmt` subproject to avoid system-fmt
+version clashes).
 
 Custom dependency paths (when Qt6/OpenCV/ONNX Runtime aren't on standard paths):
 
 ```bash
-cmake .. -DCMAKE_BUILD_TYPE=Release \
-  -DQt6_DIR=/path/to/qt6/lib/cmake/Qt6 \
-  -DOpenCV_DIR=/path/to/opencv/lib/cmake/opencv4 \
-  -DONNXRUNTIME_ROOT=/path/to/onnxruntime
+# Qt6 / OpenCV: a native file [binaries]/[properties], or PKG_CONFIG_PATH for OpenCV.
+# ONNX Runtime: auto-discovered under /opt/onnxruntime* and /usr/local/onnxruntime*,
+# or point at a custom install:
+meson setup build -Donnxruntime_root=/path/to/onnxruntime
 ```
 
-CMake options:
+Meson options (`-D<name>=<value>`):
 
 | Option | Default | Description |
 |---|---|---|
-| `MOCAP_BUILD_TESTS` | `ON` | Build the Google Test suite under `tests/` |
-| `MOCAP_ENABLE_BLACKMAGIC` | `OFF` | Compile the Blackmagic DeckLink backend (currently a stub) |
-| `MOCAP_ENABLE_DIRECTML` | `OFF` | Enable the ONNX Runtime DirectML execution provider (Windows GPU). Requires an ORT build with DML and `dml_provider_factory.h` on the include path |
+| `tests` | `true` | Build the Google Test suite under `tests/` |
+| `blackmagic` | `false` | Compile the Blackmagic DeckLink backend (currently a stub) |
+| `directml` | `false` | Enable the ONNX Runtime DirectML execution provider (Windows GPU). Requires an ORT build with DML and `dml_provider_factory.h` on the include path |
+| `onnxruntime_root` | `''` | Path to a custom ONNX Runtime install (expects `lib/` + `include/`) |
+
+Reconfigure an existing build dir with `meson setup build --reconfigure -D<opt>=<val>`.
 
 Run tests:
 
 ```bash
-cd build && ctest --output-on-failure
+meson test -C build
 ```
 
 ## Architecture

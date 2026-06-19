@@ -1,2 +1,33 @@
+# Build directories (Meson + Ninja) and git worktrees
+/build*/
 .worktrees/
-build/
+
+# Meson subprojects: keep the .wrap files, ignore downloaded/extracted sources
+/subprojects/*/
+!/subprojects/packagefiles/
+/subprojects/packagecache/
+
+# Editor / IDE
+.vscode/
+.idea/
+.vs/
+*.user
+.cache/
+/compile_commands.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Pose model weights (downloaded separately; large binaries)
+*.onnx
+
+# Runtime session output (session_<timestamp>/ with data/exports/raw_video/...)
+session_*/
+
+# Logs, core dumps, stray build artifacts
+*.log
+core
+*.o
+*.a

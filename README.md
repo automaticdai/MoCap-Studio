@@ -14,18 +14,19 @@ Real-time, markerless human motion capture from multiple synchronised cameras.
 | OpenCV | 4.8+ | Camera I/O, calibration |
 | ONNX Runtime | 1.16+ | Pose model inference |
 
-### Auto-fetched by CMake
+### Auto-fetched by Meson
 
-These are downloaded automatically via FetchContent if not found on the system:
+These are downloaded automatically as Meson subprojects (wrap files under
+`subprojects/`) if not found on the system:
 
 | Library | Purpose |
 |---------|---------|
-| Eigen 3.4 | Linear algebra |
-| spdlog 1.12+ | Logging |
+| Eigen 3.4+ | Linear algebra |
+| spdlog 1.x | Logging (always built from the subproject, with a pinned `fmt`) |
 | yaml-cpp 0.7+ | Config parsing |
 | nlohmann/json 3.11+ | JSON serialisation |
-| ezc3d | C3D file I/O |
-| Google Test 1.14 | Unit testing |
+| ezc3d | C3D file I/O (built via its CMake through Meson's `cmake` module) |
+| Google Test 1.x | Unit testing |
 
 ### Optional
 
@@ -41,9 +42,10 @@ These are downloaded automatically via FetchContent if not found on the system:
 ```bash
 # Required
 sudo apt install \
+  meson ninja-build \
   qt6-base-dev libqt6opengl6-dev libqt6openglwidgets6 \
   libopencv-dev \
-  libeigen3-dev libspdlog-dev libyaml-cpp-dev
+  libeigen3-dev libyaml-cpp-dev
 
 # Optional (for FBX export)
 sudo apt install libassimp-dev
@@ -55,40 +57,51 @@ sudo apt install libassimp-dev
 # Download from https://github.com/microsoft/onnxruntime/releases
 # Example for Linux x64 with CUDA:
 wget https://github.com/microsoft/onnxruntime/releases/download/v1.17.0/onnxruntime-linux-x64-gpu-1.17.0.tgz
-tar xzf onnxruntime-linux-x64-gpu-1.17.0.tgz
-export ONNXRUNTIME_ROOT=$(pwd)/onnxruntime-linux-x64-gpu-1.17.0
+sudo tar xzf onnxruntime-linux-x64-gpu-1.17.0.tgz -C /opt
+# Anything matching /opt/onnxruntime* or /usr/local/onnxruntime* is auto-discovered.
+# For any other location, pass -Donnxruntime_root=/path/to/onnxruntime at setup.
 ```
 
 ### Windows (MSVC 2022)
 
-1. Install Qt6 via the [Qt Online Installer](https://www.qt.io/download-qt-installer)
-2. Install OpenCV via [vcpkg](https://github.com/microsoft/vcpkg): `vcpkg install opencv4`
-3. Download ONNX Runtime from [GitHub releases](https://github.com/microsoft/onnxruntime/releases)
-4. Set environment variables: `Qt6_DIR`, `OpenCV_DIR`, `ONNXRUNTIME_ROOT`
+1. Install Meson + Ninja: `pip install meson ninja` (or `pipx install meson`)
+2. Install Qt6 via the [Qt Online Installer](https://www.qt.io/download-qt-installer)
+3. Install OpenCV via [vcpkg](https://github.com/microsoft/vcpkg): `vcpkg install opencv4`
+4. Download ONNX Runtime from [GitHub releases](https://github.com/microsoft/onnxruntime/releases)
+5. Point Meson at the dependencies with a [native file](https://mesonbuild.com/Native-environment.html) and/or `-Donnxruntime_root=...`
 
 ## Build
 
 ```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --parallel
+meson setup build
+meson compile -C build
+```
+
+On Ubuntu/Debian, Qt6 ships no pkg-config files and the generic `qmake` resolves
+to Qt5. A native file pointing at the Qt6 tools is included — pass it at setup:
+
+```bash
+meson setup build --native-file meson/ubuntu-qt6.ini
 ```
 
 ### Custom dependency paths
 
 ```bash
-cmake .. -DCMAKE_BUILD_TYPE=Release \
-  -DQt6_DIR=/path/to/qt6/lib/cmake/Qt6 \
-  -DOpenCV_DIR=/path/to/opencv/lib/cmake/opencv4 \
-  -DONNXRUNTIME_ROOT=/path/to/onnxruntime
+# OpenCV: prepend its .pc dir to PKG_CONFIG_PATH.
+# Qt6: use a native file's [binaries] section (see meson/ubuntu-qt6.ini).
+# ONNX Runtime: auto-discovered under /opt/onnxruntime* or /usr/local/onnxruntime*,
+# otherwise pass an explicit path:
+meson setup build -Donnxruntime_root=/path/to/onnxruntime
 ```
 
-### CMake options
+### Build options (`-D<name>=<value>`)
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `MOCAP_BUILD_TESTS` | `ON` | Build unit tests |
-| `MOCAP_ENABLE_BLACKMAGIC` | `OFF` | Enable Blackmagic DeckLink support |
+| `tests` | `true` | Build unit tests |
+| `blackmagic` | `false` | Enable Blackmagic DeckLink support |
+| `directml` | `false` | Enable the ONNX Runtime DirectML execution provider (Windows GPU) |
+| `onnxruntime_root` | `''` | Path to a custom ONNX Runtime install |
 
 ## Run
 
@@ -103,8 +116,7 @@ cmake .. -DCMAKE_BUILD_TYPE=Release \
 ## Tests
 
 ```bash
-cd build
-ctest --output-on-failure
+meson test -C build
 ```
 
 ## Configuration
@@ -177,7 +189,8 @@ src/
 └── main.cpp
 tests/              # Google Test unit tests
 resources/          # Shaders, skeleton definitions
-cmake/              # Custom find modules
+subprojects/        # Meson wrap files for auto-fetched dependencies
+meson/              # Native files (e.g. Qt6 tool paths on Ubuntu/Debian)
 ```
 
 ## License
