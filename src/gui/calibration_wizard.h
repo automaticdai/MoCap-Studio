@@ -20,6 +20,7 @@
 #include "core/camera_intrinsics.h"
 #include "core/config.h"
 #include "core/intrinsics_calibrator.h"
+#include "core/stereo_calibrator.h"
 
 namespace mocap {
 
@@ -50,7 +51,14 @@ public:
     ~CalibrationWizard() override;
 
     std::vector<CameraIntrinsics> intrinsicsResults() const;
-    std::vector<CameraExtrinsics> extrinsicsResults() const;  // empty in Phase 1
+    std::vector<CameraExtrinsics> extrinsicsResults() const;
+
+    bool computeExtrinsics(QString& error);
+    const std::vector<StereoResult>& stereoResults() const { return stereo_results_; }
+    // A capture is committed only if every selected camera detected the board.
+    bool addPairedCapture(const std::vector<std::vector<cv::Point2f>>& corners,
+                          const std::vector<cv::Size>& sizes);
+    void clearCaptures();
 
     // --- Shared state, mutated by individual pages ---
     const std::vector<CameraConfig>& cameraConfigs() const { return camera_configs_; }
@@ -81,6 +89,8 @@ private:
     std::vector<std::vector<std::vector<cv::Point2f>>> per_slot_corners_;
     std::vector<cv::Size> per_slot_image_size_;
     std::vector<IntrinsicsResult> per_slot_results_;
+    std::vector<StereoResult> stereo_results_;
+    std::vector<CameraExtrinsics> extrinsics_;
 };
 
 // Page 1: Select cameras

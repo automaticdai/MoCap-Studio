@@ -7,6 +7,7 @@
 #include <mutex>
 #include <atomic>
 #include <deque>
+#include <map>
 #include <condition_variable>
 #include "capture/icamera_source.h"
 #include "core/types.h"
@@ -33,6 +34,7 @@ public:
 
 signals:
     void frameSetReady(std::shared_ptr<FrameSet> frameSet);
+    void previewReady(std::shared_ptr<FrameSet> frameSet);
     void cameraError(const QString& camera_id, const QString& error);
 
 private:
@@ -50,12 +52,15 @@ private:
 
     void cameraThreadFunc(CameraSlot* slot);
     void syncThreadFunc();
+    void publishPreview(const CapturedFrame& frame);
     void publishFrameSet(std::shared_ptr<FrameSet> frame_set);
 
     // At most one delivery is queued on the GUI thread. Slow inference must
     // not build an unbounded queue of stale video frames.
     std::mutex delivery_mutex_;
     std::shared_ptr<FrameSet> pending_frame_set_;
+    std::map<std::string, CapturedFrame> pending_previews_;
+    bool preview_queued_ = false;
     bool delivery_queued_ = false;
     bool latest_delivery_ = false;
 

@@ -9,6 +9,8 @@ class FastCamera : public mocap::ICameraSource {
 public:
     std::string camera_id = "fake";
     bool live = true;
+    bool stalled = false;
+    double timestamp_offset = 0.0;
     std::atomic<int> produced{0};
     bool open(const mocap::CameraConfig&) override { return true; }
     void close() override {}
@@ -17,9 +19,10 @@ public:
     bool isLive() const override { return live; }
     bool grabFrame(mocap::CapturedFrame& frame, int) override {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        if (stalled) return false;
         frame.camera_id = id();
         frame.frame_number = ++produced;
-        frame.timestamp = frame.frame_number * 0.002;
+        frame.timestamp = frame.frame_number * 0.002 + timestamp_offset;
         return true;
     }
     mocap::CameraIntrinsics intrinsics() const override { return {}; }
@@ -101,4 +104,48 @@ TEST(FrameBroker, SlowGuiGetsLatestAndStopDoesNotDeadlock) {
     QCoreApplication::processEvents();
     EXPECT_GT(received, stopped_count);
     broker.stop();
+}
+
+TEST(FrameBroker, PreviewSurvivesSkewAndStalledCameraWithoutBypassingCaptureSync) {
+    ensureApplication();
+    for (bool stalled : {false, true}) {
+        mocap::FrameBroker broker;
+        auto first = std::make_shared<FastCamera>();
+        auto second = std::make_shared<FastCamera>();
+        second->camera_id = "second";
+        second->timestamp_offset = 10.0;
+        second->stalled = stalled;
+        broker.addCamera(first);
+        broker.addCamera(second);
+        int previews = 0, synced = 0, latest_first = 0;
+        bool saw_second = false;
+        QObject::connect(&broker, &mocap::FrameBroker::previewReady, &broker,
+            [&](std::shared_ptr<mocap::FrameSet> frames) {
+                ++previews;
+                for (const auto& frame : frames->frames) {
+                    if (frame.camera_id == first->id()) latest_first = frame.frame_number;
+                    if (frame.camera_id == second->id()) saw_second = true;
+                }
+            });
+        QObject::connect(&broker, &mocap::FrameBroker::frameSetReady, &broker,
+            [&](std::shared_ptr<mocap::FrameSet>) { ++synced; });
+        broker.start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const int before = first->produced;
+        QCoreApplication::processEvents();
+        EXPECT_GE(previews, 1);
+        EXPECT_LE(previews, 2);
+        EXPECT_GE(latest_first, before - 5);
+        EXPECT_EQ(saw_second, !stalled);
+        EXPECT_EQ(synced, 0);
+        broker.stop();
+        const int stopped = previews;
+        QCoreApplication::processEvents();
+        EXPECT_EQ(previews, stopped);
+        broker.start(true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        QCoreApplication::processEvents();
+        EXPECT_GT(previews, stopped);
+        broker.stop();
+    }
 }

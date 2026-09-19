@@ -20,6 +20,10 @@ public:
 
     void setCameras(const std::vector<CameraView>& cameras);
 
+    // Merge per-camera tracks only when calibrated reprojection agrees.
+    std::vector<PersonTracker::TrackedPerson2D> associateAcrossCameras(
+        const std::vector<PersonTracker::TrackedPerson2D>& detections) const;
+
     // Triangulate all keypoints for a set of tracked persons
     std::vector<Pose3D> triangulate(
         const std::vector<PersonTracker::TrackedPerson2D>& detections,

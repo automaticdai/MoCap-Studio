@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 #include "capture/ip_camera_source.h"
+#include "capture/frame_broker.h"
+#include <QCoreApplication>
+#include <set>
 #include "pose/onnx_pose_estimator.h"
 #include <chrono>
 #include <cstdlib>
@@ -74,4 +77,52 @@ TEST(IpCamera, SlowConsumerSkipsFramesAndModelRuns) {
     EXPECT_FALSE(camera.grabFrame(latest));
     ASSERT_TRUE(camera.open(config));
     EXPECT_TRUE(camera.grabFrame(latest, 5000));
+}
+
+TEST(IpCamera, SequentialConnectionsShareClockAndPreview) {
+    const char* first_url = std::getenv("MOCAP_TEST_RTSP_URL");
+    const char* second_url = std::getenv("MOCAP_TEST_RTSP_URL_2");
+    if (!first_url || !second_url) GTEST_SKIP() << "Set both RTSP URLs for dual camera validation";
+    auto first = std::make_shared<mocap::IpCameraSource>();
+    auto second = std::make_shared<mocap::IpCameraSource>();
+    mocap::CameraConfig config;
+    config.id = "first";
+    config.url = first_url;
+    ASSERT_TRUE(first->open(config));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    config.id = "second";
+    config.url = second_url;
+    ASSERT_TRUE(second->open(config));
+    const double now = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    for (auto camera : {first, second}) {
+        mocap::CapturedFrame frame;
+        ASSERT_TRUE(camera->grabFrame(frame, 5000));
+        EXPECT_FALSE(frame.image.empty());
+        EXPECT_NEAR(frame.timestamp, now, 1.0);
+        std::cout << camera->id() << ": decoded " << frame.image.cols << "x"
+                  << frame.image.rows << ", timestamp offset " << frame.timestamp - now << "s\n";
+    }
+    static int argc = 1;
+    static char name[] = "live-preview-test";
+    static char* argv[] = {name, nullptr};
+    static QCoreApplication app(argc, argv);
+    mocap::FrameBroker broker;
+    broker.addCamera(first);
+    broker.addCamera(second);
+    std::set<std::string> seen;
+    QObject::connect(&broker, &mocap::FrameBroker::previewReady, &broker,
+        [&](std::shared_ptr<mocap::FrameSet> frames) {
+            for (const auto& frame : frames->frames)
+                if (!frame.image.empty()) seen.insert(frame.camera_id);
+        });
+    broker.start(true);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (seen.size() < 2 && std::chrono::steady_clock::now() < deadline) {
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    broker.stop();
+    EXPECT_EQ(seen.size(), 2u);
+
 }

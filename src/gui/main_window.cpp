@@ -25,6 +25,9 @@
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QSettings>
+#include <QTemporaryDir>
+#include <QSaveFile>
+#include <QFile>
 #include <spdlog/spdlog.h>
 #include <filesystem>
 
@@ -147,6 +150,8 @@ void MainWindow::setupDockWidgets() {
 }
 
 void MainWindow::setupConnections() {
+    connect(frame_broker_.get(), &FrameBroker::previewReady,
+            camera_feed_widget_, &CameraFeedWidget::onFrameSet);
     // Frame broker → processing pipeline
     connect(frame_broker_.get(), &FrameBroker::frameSetReady,
             this, &MainWindow::onFrameSetReady);
@@ -324,7 +329,7 @@ void MainWindow::updateReconstructionStatus() {
     } else if (calibrated_camera_count_ < required) {
         mocap_canvas_->setStatusMessage(QString(
             "3D calibration incomplete: %1 of %2 required cameras have intrinsics and extrinsics. "
-            "Set both calibration files in Camera Setup.").arg(calibrated_camera_count_).arg(required));
+            "Use Cameras → Calibrate, or load both calibration files in Camera Setup.").arg(calibrated_camera_count_).arg(required));
     } else if (!capturing_) {
         mocap_canvas_->setStatusMessage("3D ready. Create or open a session, then start capture (F5).");
     } else if (!pose_estimator_->isInitialized()) {
@@ -523,7 +528,6 @@ void MainWindow::onStopCapture() {
 // --- Pipeline Processing ---
 
 void MainWindow::onFrameSetReady(std::shared_ptr<FrameSet> frameSet) {
-    camera_feed_widget_->onFrameSet(frameSet);
     if (!capturing_) return;
     frame_count_++;
     captured_frame_count_++;
@@ -549,6 +553,7 @@ void MainWindow::processFrameSet(std::shared_ptr<FrameSet> frameSet) {
 
     // Track persons across cameras
     auto tracked = person_tracker_->update(all_poses, frameSet->timestamp);
+    tracked = triangulator_->associateAcrossCameras(tracked);
 
     // Triangulate 3D positions
     auto poses3d = triangulator_->triangulate(tracked, frameSet->timestamp);
@@ -777,6 +782,12 @@ void MainWindow::onCalibrate() {
         return;
     }
 
+    if (!session_manager_->isOpen()) {
+        QMessageBox::information(this, "No Session",
+            "Create or open a session before calibrating so the results can be saved.");
+        return;
+    }
+
     // Stop the live pipeline so the wizard can take exclusive access to the
     // camera devices for its lifetime.
     const bool was_capturing = capturing_;
@@ -787,25 +798,50 @@ void MainWindow::onCalibrate() {
     {
         CalibrationWizard wizard(config_.cameras, this);
         if (wizard.exec() == QDialog::Accepted) {
-            const auto intrinsics = wizard.intrinsicsResults();
-            const auto& selected = wizard.selectedCameraIndices();
-
-            if (session_manager_->isOpen() && !intrinsics.empty()) {
-                const std::string calib_dir = session_manager_->calibrationDir();
-                for (size_t slot = 0; slot < intrinsics.size(); ++slot) {
-                    if (intrinsics[slot].image_size.area() == 0) continue;  // skipped/failed
-                    const int cam_idx = selected[slot];
-                    const std::string path = calib_dir + "/" +
-                                             config_.cameras[cam_idx].id + "_intrinsics.yaml";
-                    intrinsics[slot].saveToYaml(path);
-                    config_.cameras[cam_idx].intrinsics_file = path;
+            try {
+                const auto intrinsics = wizard.intrinsicsResults();
+                const auto extrinsics = wizard.extrinsicsResults();
+                const auto& selected = wizard.selectedCameraIndices();
+                if (intrinsics.size() != selected.size() || selected.empty() ||
+                    (selected.size() > 1 && extrinsics.size() != selected.size()))
+                    throw std::runtime_error("Calibration results are incomplete.");
+                // Stage new files in a fresh directory. Existing calibration remains
+                // usable if writing any result or the config fails.
+                QTemporaryDir output(QString::fromStdString(session_manager_->calibrationDir()) + "/rig-XXXXXX");
+                if (!output.isValid()) throw std::runtime_error("Cannot create calibration directory.");
+                auto updated = config_;
+                for (size_t slot = 0; slot < selected.size(); ++slot) {
+                    auto& camera = updated.cameras.at(selected[slot]);
+                    const auto stem = output.filePath(QString::number(slot)).toStdString();
+                    intrinsics[slot].saveToYaml(stem + "_intrinsics.yaml");
+                    camera.intrinsics_file = stem + "_intrinsics.yaml";
+                    camera.extrinsics_file.clear();
+                    if (!extrinsics.empty()) {
+                        extrinsics[slot].saveToJson(stem + "_extrinsics.json");
+                        camera.extrinsics_file = stem + "_extrinsics.json";
+                    }
                 }
-                config_.save(config_path_);
-                spdlog::info("Saved calibration to {}", calib_dir);
-            } else if (!session_manager_->isOpen()) {
-                QMessageBox::information(this, "No Session",
-                                         "Calibration succeeded but no session is open. "
-                                         "Open or create a session to persist the results.");
+                // A newly solved rig has its own world frame. Do not mix it with
+                // unselected cameras' old extrinsics from another coordinate frame.
+                if (!extrinsics.empty()) {
+                    for (size_t i = 0; i < updated.cameras.size(); ++i)
+                        if (std::find(selected.begin(), selected.end(), static_cast<int>(i)) == selected.end())
+                            updated.cameras[i].extrinsics_file.clear();
+                }
+                const QString staged = output.filePath("config.yaml");
+                updated.save(staged.toStdString());
+                QFile input(staged);
+                if (!input.open(QIODevice::ReadOnly)) throw std::runtime_error("Cannot read staged configuration.");
+                const QByteArray contents = input.readAll();
+                QSaveFile destination(QString::fromStdString(config_path_));
+                if (!destination.open(QIODevice::WriteOnly) ||
+                    destination.write(contents) != contents.size() || !destination.commit())
+                    throw std::runtime_error("Cannot save configuration.");
+                output.setAutoRemove(false);
+                config_ = std::move(updated);
+                spdlog::info("Saved calibration for {} cameras to {}", selected.size(), output.path().toStdString());
+            } catch (const std::exception& e) {
+                QMessageBox::warning(this, "Calibration not saved", e.what());
             }
         }
     } // Release wizard-owned cameras before reopening the live preview.

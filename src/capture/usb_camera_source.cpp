@@ -40,7 +40,6 @@ bool UsbCameraSource::open(const CameraConfig& config) {
     }
 
     frame_counter_ = 0;
-    start_time_ = std::chrono::steady_clock::now();
 
     spdlog::info("Opened USB camera '{}' at index {} ({}x{})",
                  config.id, config.device_index,
@@ -67,7 +66,7 @@ bool UsbCameraSource::grabFrame(CapturedFrame& out, int /*timeout_ms*/) {
     if (frame.empty()) return false;
 
     auto now = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - start_time_).count();
+    double elapsed = std::chrono::duration<double>(now.time_since_epoch()).count();
 
     out.camera_id = config_.id;
     out.timestamp = elapsed;

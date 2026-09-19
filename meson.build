@@ -109,6 +109,7 @@ mocap_sources = files(
   'src/core/skeleton_definition.cpp',
   'src/core/camera_intrinsics.cpp',
   'src/core/intrinsics_calibrator.cpp',
+  'src/core/stereo_calibrator.cpp',
   # capture
   'src/capture/usb_camera_source.cpp',
   'src/capture/ip_camera_source.cpp',
@@ -204,6 +205,7 @@ if get_option('tests')
     'test_csv_json_exporter',
     'test_person_tracker',
     'test_intrinsics_calibrator',
+    'test_stereo_calibrator',
   ]
   foreach t : test_names
     exe = executable(t,

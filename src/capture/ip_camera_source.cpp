@@ -48,7 +48,6 @@ bool IpCameraSource::open(const CameraConfig& config) {
     }
 
     frame_counter_ = 0;
-    start_time_ = std::chrono::steady_clock::now();
     running_ = true;
     reader_ = std::thread(&IpCameraSource::readLoop, this);
 
@@ -91,7 +90,7 @@ void IpCameraSource::readLoop() {
             CapturedFrame frame;
             frame.camera_id = config_.id;
             frame.timestamp = std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - start_time_).count();
+                std::chrono::steady_clock::now().time_since_epoch()).count();
             frame.frame_number = frame_counter_++;
             frame.image = std::move(image);
             {

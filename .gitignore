@@ -6,6 +6,7 @@
 /subprojects/*/
 !/subprojects/packagefiles/
 /subprojects/packagecache/
+/subprojects/.wraplock
 
 # Editor / IDE
 .vscode/
@@ -28,6 +29,6 @@ session_*/
 
 # Logs, core dumps, stray build artifacts
 *.log
-core
+/core
 *.o
 *.a

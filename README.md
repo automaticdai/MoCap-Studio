@@ -164,6 +164,39 @@ gui:
   colour_palette: "oklab_12"
 ```
 
+## Calibrating two cameras for 3D
+
+1. Keep both cameras fixed, with overlapping views of the capture area. Create or
+   open a session, then choose **Cameras → Calibrate** and select both cameras.
+2. Use a flat, rigid checkerboard. Enter its **inner corner** counts and measured
+   square width in metres (the default is 9 × 6 inner corners, 25 mm squares).
+3. Hold the entire board still and visible in both cameras before pressing
+   **Capture Frame**. Move and tilt it between captures, covering different parts
+   of the shared field of view and different distances. Do not flip the board.
+   Collect at least eight paired views; partial detections are not saved.
+4. Run calibration and review the lens/stereo RMS errors and camera separation.
+   Errors above 2 pixels prevent completion: recapture sharper, varied views.
+   **Finish** writes intrinsics and extrinsics into the session and updates the
+   camera configuration. Selecting only one camera performs lens calibration and
+   clears that camera's old extrinsics; it cannot enable 3D by itself.
+5. Start capture with **F5**, with the same person visible in both cameras.
+
+The first selected camera defines the world origin, with X right, Y up and Z
+behind that camera; distances are in metres. This does not estimate the floor.
+Moving a camera, changing its zoom/focus or changing the stream resolution requires
+recalibration. A newly calibrated rig replaces the world frame, so unselected
+cameras' old extrinsics are removed from the active configuration.
+
+The wizard accepts live frame pairs up to 100 ms apart, and requires the board to
+remain stationary during each capture. This is separate from the stricter
+`capture.max_sync_skew_ms` used for motion capture. Camera timestamps measure host
+frame arrival, not hardware exposure synchronization; differing RTSP latency can
+still reduce accuracy for moving subjects. Cross-camera person matching uses
+calibrated reprojection agreement and works best with one person in the shared view.
+
+The stereo solve uses fixed lens parameters with OpenCV's
+[`stereoCalibrate`](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html).
+
 ## Export Formats
 
 | Format | Data Layers | Use Case |

@@ -27,7 +27,6 @@ private:
     CameraIntrinsics intrinsics_;
     bool intrinsics_loaded_ = false;
     int frame_counter_ = 0;
-    std::chrono::steady_clock::time_point start_time_;
 };
 
 }  // namespace mocap

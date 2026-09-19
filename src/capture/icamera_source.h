@@ -14,6 +14,8 @@ public:
     virtual void close() = 0;
     virtual bool isOpened() const = 0;
 
+    // Live sources use steady_clock time_since_epoch seconds so independently
+    // opened cameras share the same timestamp origin. Files use media time.
     virtual bool grabFrame(CapturedFrame& out, int timeout_ms = 100) = 0;
     virtual bool prefersLatestFrame() const { return false; }
     virtual bool isLive() const { return true; }

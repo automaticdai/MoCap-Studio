@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <random>
 #include <cmath>
+#include <set>
+#include <numeric>
 
 namespace mocap {
 
@@ -33,6 +35,70 @@ int Triangulator::cameraIndex(const std::string& camera_id) const {
 
 cv::Mat Triangulator::projectionMatrix(int camera_idx) const {
     return cameras_[camera_idx].extrinsics.projectionMatrix(cameras_[camera_idx].intrinsics);
+}
+
+std::vector<PersonTracker::TrackedPerson2D> Triangulator::associateAcrossCameras(
+    const std::vector<PersonTracker::TrackedPerson2D>& detections) const {
+    struct Match { size_t first, second; float error; };
+    std::vector<Match> matches;
+    for (size_t i = 0; i < detections.size(); ++i) {
+        const int a = cameraIndex(detections[i].camera_id);
+        if (a < 0) continue;
+        for (size_t j = i + 1; j < detections.size(); ++j) {
+            const int b = cameraIndex(detections[j].camera_id);
+            if (b < 0 || a == b) continue;
+            const auto& left = detections[i].pose.keypoints;
+            const auto& right = detections[j].pose.keypoints;
+            int tested = 0, inliers = 0;
+            float sum = 0;
+            for (size_t k = 0; k < std::min(left.size(), right.size()); ++k) {
+                if (left[k].conf < 0.3f || right[k].conf < 0.3f) continue;
+                ++tested;
+                const auto pa = cameras_[a].intrinsics.undistort({left[k].x, left[k].y});
+                const auto pb = cameras_[b].intrinsics.undistort({right[k].x, right[k].y});
+                const auto point = dlt({{projectionMatrix(a), pa}, {projectionMatrix(b), pb}});
+                if (!point.allFinite()) continue;
+                bool in_front = true;
+                for (int camera : {a, b}) {
+                    const auto& ext = cameras_[camera].extrinsics;
+                    const double depth = ext.rotation.at<double>(2, 0) * point.x() +
+                        ext.rotation.at<double>(2, 1) * point.y() +
+                        ext.rotation.at<double>(2, 2) * point.z() + ext.translation[2];
+                    in_front = in_front && depth > 0;
+                }
+                const float error = (reprojectionError(point, a, pa) + reprojectionError(point, b, pb)) / 2;
+                if (in_front && std::isfinite(error) && error <= ransac_threshold_px_) {
+                    ++inliers;
+                    sum += error;
+                }
+            }
+            if (inliers >= 4 && inliers * 4 >= tested * 3)
+                matches.push_back({i, j, sum / inliers});
+        }
+    }
+    // Best geometric matches first; never put two detections from one camera
+    // into the same person, including indirect matches through a third camera.
+    std::sort(matches.begin(), matches.end(), [](const auto& a, const auto& b) { return a.error < b.error; });
+    std::vector<size_t> group(detections.size());
+    std::iota(group.begin(), group.end(), 0);
+    for (const auto& match : matches) {
+        const size_t a = group[match.first], b = group[match.second];
+        if (a == b) continue;
+        std::set<std::string> cameras;
+        bool overlap = false;
+        for (size_t i = 0; i < group.size(); ++i)
+            if ((group[i] == a || group[i] == b) && !cameras.insert(detections[i].camera_id).second)
+                overlap = true;
+        if (!overlap) for (auto& id : group) if (id == b) id = a;
+    }
+    auto result = detections;
+    for (size_t i = 0; i < result.size(); ++i) {
+        int id = detections[i].global_person_id;
+        for (size_t j = 0; j < result.size(); ++j)
+            if (group[i] == group[j]) id = std::min(id, detections[j].global_person_id);
+        result[i].global_person_id = id;
+    }
+    return result;
 }
 
 std::vector<Pose3D> Triangulator::triangulate(
@@ -112,15 +178,20 @@ std::pair<Vec3f, float> Triangulator::triangulateSinglePoint(
         return {Vec3f::Zero(), 1e6f};
     }
 
+    auto corrected = observations;
+    for (auto& [camera, point] : corrected)
+        point = cameras_[camera].intrinsics.undistort(point);
+
     if (ransac_enabled_ && static_cast<int>(observations.size()) >= 3) {
         float reproj_err = 0.0f;
-        Vec3f point = ransacTriangulate(observations, reproj_err);
+        Vec3f point = ransacTriangulate(corrected, reproj_err);
         return {point, reproj_err};
     }
 
-    // Direct DLT with all observations
+    // Lens calibration is estimated on distorted pixels. DLT and reprojection
+    // use pinhole coordinates, so undistort observations exactly once here.
     std::vector<std::pair<cv::Mat, cv::Point2f>> proj_and_points;
-    for (const auto& [cam_idx, pt] : observations) {
+    for (const auto& [cam_idx, pt] : corrected) {
         proj_and_points.emplace_back(projectionMatrix(cam_idx), pt);
     }
 
@@ -128,7 +199,7 @@ std::pair<Vec3f, float> Triangulator::triangulateSinglePoint(
 
     // Compute mean reprojection error
     float total_err = 0.0f;
-    for (const auto& [cam_idx, pt] : observations) {
+    for (const auto& [cam_idx, pt] : corrected) {
         total_err += reprojectionError(point, cam_idx, pt);
     }
     float mean_err = total_err / observations.size();

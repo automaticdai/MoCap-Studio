@@ -3,6 +3,7 @@
 #include <opencv2/imgproc.hpp>
 #include <nlohmann/json.hpp>
 #include <fstream>
+#include <stdexcept>
 
 namespace mocap {
 
@@ -45,6 +46,7 @@ CameraIntrinsics CameraIntrinsics::loadFromYaml(const std::string& path) {
 
 void CameraIntrinsics::saveToYaml(const std::string& path) const {
     cv::FileStorage fs(path, cv::FileStorage::WRITE);
+    if (!fs.isOpened()) throw std::runtime_error("Cannot write intrinsics: " + path);
     fs << "fx" << fx;
     fs << "fy" << fy;
     fs << "cx" << cx;
@@ -103,8 +105,11 @@ void CameraExtrinsics::saveToJson(const std::string& path) const {
 
     j["translation"] = {translation[0], translation[1], translation[2]};
 
-    std::ofstream f(path);
+    std::ofstream f;
+    f.exceptions(std::ios::failbit | std::ios::badbit);
+    f.open(path);
     f << j.dump(2);
+    f.close();
 }
 
 }  // namespace mocap

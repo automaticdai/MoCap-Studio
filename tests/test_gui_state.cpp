@@ -14,6 +14,9 @@
 #include <fstream>
 #include <thread>
 #include <cstdlib>
+#include "gui/calibration_wizard.h"
+#include "calibration_test_data.h"
+#include <QDoubleSpinBox>
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
@@ -157,6 +160,12 @@ TEST(LiveUi, CameraPreviewAppearsWithoutCreatingSession) {
     camera.type = "ip";
     camera.url = url;
     config.cameras.push_back(camera);
+    const char* second_url = std::getenv("MOCAP_TEST_UI_RTSP_2");
+    if (second_url) {
+        camera.id = "cam1";
+        camera.url = second_url;
+        config.cameras.push_back(camera);
+    }
     const auto config_path = temporary.filePath("config.yaml").toStdString();
     config.save(config_path);
     mocap::MainWindow window(config_path);
@@ -169,7 +178,17 @@ TEST(LiveUi, CameraPreviewAppearsWithoutCreatingSession) {
     }
     EXPECT_TRUE(preview->text().isEmpty()) << preview->text().toStdString();
     EXPECT_TRUE(window.findChild<QLabel*>("sessionStatus")->text().startsWith("No session"));
-    EXPECT_TRUE(window.findChild<QLabel*>("reconstructionStatus")->text().contains("1 connected"));
+    EXPECT_TRUE(window.findChild<QLabel*>("reconstructionStatus")->text().contains(
+        second_url ? "3D calibration incomplete" : "1 connected"));
+    if (second_url) {
+        auto* second_preview = window.findChild<QLabel*>("cameraPreview_cam1");
+        ASSERT_NE(second_preview, nullptr);
+        for (int i = 0; i < 200 && !second_preview->text().isEmpty(); ++i) {
+            QApplication::processEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        EXPECT_TRUE(second_preview->text().isEmpty()) << second_preview->text().toStdString();
+    }
     const auto size = window.size();
     for (int i = 0; i < 60; ++i) {
         QApplication::processEvents();
@@ -177,4 +196,89 @@ TEST(LiveUi, CameraPreviewAppearsWithoutCreatingSession) {
     }
     EXPECT_EQ(window.size(), size);
     if (const char* path = std::getenv("MOCAP_TEST_UI_SCREENSHOT")) window.grab().save(path);
+}
+
+namespace {
+void seedCalibration(mocap::CalibrationWizard& wizard, const SyntheticRig& rig) {
+    wizard.setSelectedCameraIndices({0, 1});
+    for (size_t i = 0; i < rig.left.size(); ++i)
+        ASSERT_TRUE(wizard.addPairedCapture({rig.left[i], rig.right[i]},
+                                          {rig.first.image_size, rig.second.image_size}));
+    for (int slot = 0; slot < 2; ++slot) {
+        const auto result = mocap::calibrateIntrinsics(wizard.cornersForSlot(slot),
+            wizard.imageSizeForSlot(slot), wizard.boardSpec());
+        ASSERT_TRUE(result.success);
+        wizard.setResultForSlot(slot, result);
+    }
+    QString error;
+    ASSERT_TRUE(wizard.computeExtrinsics(error)) << error.toStdString();
+}
+std::vector<mocap::CameraConfig> syntheticConfigs() {
+    std::vector<mocap::CameraConfig> cameras(2);
+    cameras[0].id = "left"; cameras[1].id = "right";
+    for (auto& camera : cameras) camera.type = "synthetic";
+    return cameras;
+}
+}
+
+TEST(CalibrationUi, CapturesRemainPairedAndBoardChangesInvalidateResults) {
+    SyntheticRig rig;
+    mocap::CalibrationWizard wizard(syntheticConfigs());
+    seedCalibration(wizard, rig);
+    const auto extrinsics = wizard.extrinsicsResults();
+    ASSERT_EQ(extrinsics.size(), 2u);
+    cv::Mat expected = (cv::Mat_<double>(3, 3) << 1,0,0, 0,-1,0, 0,0,-1);
+    EXPECT_LT(cv::norm(extrinsics[0].rotation - expected), 1e-6);
+    EXPECT_LT(cv::norm(extrinsics[1].rotation - rig.relative.rotation * expected), 0.002);
+    EXPECT_LT(cv::norm(extrinsics[1].translation - rig.relative.translation), 0.002);
+    const auto count = wizard.cornersForSlot(0).size();
+    EXPECT_FALSE(wizard.addPairedCapture({rig.left[0], {}}, {rig.first.image_size, rig.second.image_size}));
+    EXPECT_FALSE(wizard.addPairedCapture({rig.left[0], rig.right[0]}, {{640, 480}, rig.second.image_size}));
+    EXPECT_EQ(wizard.cornersForSlot(0).size(), count);
+    EXPECT_EQ(wizard.cornersForSlot(1).size(), count);
+    // Changing the physical board invalidates both lens and stereo estimates.
+    auto* square = wizard.findChild<QDoubleSpinBox*>();
+    ASSERT_NE(square, nullptr);
+    square->setValue(0.030);
+    EXPECT_TRUE(wizard.cornersForSlot(0).empty());
+    EXPECT_TRUE(wizard.cornersForSlot(1).empty());
+    EXPECT_TRUE(wizard.extrinsicsResults().empty());
+    EXPECT_FALSE(wizard.resultForSlot(0).success);
+}
+
+TEST(CalibrationUi, FinishPersistsBothCalibrationFilesAndConfigLinks) {
+    QTemporaryDir temporary;
+    mocap::AppConfig config;
+    config.cameras = syntheticConfigs();
+    const auto path = temporary.filePath("config.yaml").toStdString();
+    config.save(path);
+    mocap::MainWindow window(path);
+    QTimer::singleShot(0, [&] {
+        auto* dialog = qobject_cast<mocap::SessionDialog*>(QApplication::activeModalWidget());
+        if (!dialog) { ADD_FAILURE() << "Expected session dialog"; return; }
+        auto fields = dialog->findChildren<QLineEdit*>();
+        fields[0]->setText("Calibration test");
+        fields[1]->setText(temporary.path());
+        dialog->accept();
+    });
+    ASSERT_TRUE(QMetaObject::invokeMethod(&window, "onNewSession", Qt::DirectConnection));
+    QTimer::singleShot(0, [&] {
+        auto* wizard = qobject_cast<mocap::CalibrationWizard*>(QApplication::activeModalWidget());
+        if (!wizard) { ADD_FAILURE() << "Expected calibration wizard"; return; }
+        wizard->setStartId(3);
+        wizard->restart();
+        seedCalibration(*wizard, SyntheticRig{});
+        wizard->accept();
+    });
+    ASSERT_TRUE(QMetaObject::invokeMethod(&window, "onCalibrate", Qt::DirectConnection));
+    const auto saved = mocap::AppConfig::load(path);
+    ASSERT_EQ(saved.cameras.size(), 2u);
+    for (const auto& camera : saved.cameras) {
+        ASSERT_FALSE(camera.intrinsics_file.empty());
+        ASSERT_FALSE(camera.extrinsics_file.empty());
+        EXPECT_GT(mocap::CameraIntrinsics::loadFromYaml(camera.intrinsics_file).fx, 0);
+        EXPECT_TRUE(cv::checkRange(mocap::CameraExtrinsics::loadFromJson(camera.extrinsics_file).rotation));
+    }
+    const auto second = mocap::CameraExtrinsics::loadFromJson(saved.cameras[1].extrinsics_file);
+    EXPECT_NEAR(cv::norm(second.translation), cv::norm(SyntheticRig{}.relative.translation), 0.002);
 }

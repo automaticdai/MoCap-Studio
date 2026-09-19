@@ -7,6 +7,10 @@ cameras:
     type: ip
     url: rtsp://172.30.64.1:8554/cam0
     resolution: [1920, 1080]
+  - id: cam1
+    type: ip
+    url: rtsp://172.30.64.1:8554/cam1
+    resolution: [1920, 1080]
 pose_estimation:
   backend: onnxruntime
   model: resources/models/rtmpose-m-wholebody.onnx

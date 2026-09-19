@@ -68,6 +68,7 @@ void FrameBroker::stop() {
     {
         std::lock_guard<std::mutex> delivery_lock(delivery_mutex_);
         pending_frame_set_.reset();
+        pending_previews_.clear();
     }
     spdlog::info("FrameBroker stopped");
 }
@@ -94,6 +95,7 @@ void FrameBroker::cameraThreadFunc(CameraSlot* slot) {
     while (slot->running.load()) {
         CapturedFrame frame;
         if (slot->source->grabFrame(frame, 100)) {
+            publishPreview(frame);
             std::lock_guard<std::mutex> lock(slot->buffer_mutex);
             if (slot->source->prefersLatestFrame()) slot->buffer.clear();
             slot->buffer.push_back(std::move(frame));
@@ -171,6 +173,26 @@ void FrameBroker::syncThreadFunc() {
             // Discard oldest frames and retry on next iteration
         }
     }
+}
+
+// Preview each camera independently, retaining only its newest frame while the
+// GUI is busy. Synchronization remains required for processing/recording.
+void FrameBroker::publishPreview(const CapturedFrame& frame) {
+    std::lock_guard<std::mutex> lock(delivery_mutex_);
+    pending_previews_[frame.camera_id] = frame;
+    if (preview_queued_) return;
+    preview_queued_ = true;
+    QMetaObject::invokeMethod(this, [this] {
+        auto preview = std::make_shared<FrameSet>();
+        {
+            std::lock_guard<std::mutex> lock(delivery_mutex_);
+            for (auto& [id, frame] : pending_previews_)
+                preview->frames.push_back(std::move(frame));
+            pending_previews_.clear();
+            preview_queued_ = false;
+        }
+        if (running_ && !preview->frames.empty()) emit previewReady(std::move(preview));
+    }, Qt::QueuedConnection);
 }
 
 void FrameBroker::publishFrameSet(std::shared_ptr<FrameSet> frame_set) {
