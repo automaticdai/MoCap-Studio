@@ -19,7 +19,8 @@ public:
 
     // Create new session directory with timestamp name
     std::string createSession(const std::string& base_dir, double fps,
-                              const std::vector<std::string>& camera_ids);
+                              const std::vector<std::string>& camera_ids,
+                              const std::string& name = "");
 
     // Open existing session
     bool openSession(const std::string& session_dir);

@@ -3,6 +3,10 @@
 #include "capture/icamera_source.h"
 #include <opencv2/videoio.hpp>
 #include <chrono>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 namespace mocap {
 
@@ -16,13 +20,22 @@ public:
     bool isOpened() const override;
 
     bool grabFrame(CapturedFrame& out, int timeout_ms = 100) override;
+    bool prefersLatestFrame() const override { return true; }
 
     CameraIntrinsics intrinsics() const override;
     std::string id() const override;
     std::string displayName() const override;
 
 private:
+    void readLoop();
+
     cv::VideoCapture capture_;
+    std::thread reader_;
+    std::atomic<bool> running_{false};
+    std::mutex frame_mutex_;
+    std::condition_variable frame_ready_;
+    CapturedFrame latest_frame_;
+    bool frame_available_ = false;
     CameraConfig config_;
     CameraIntrinsics intrinsics_;
     bool intrinsics_loaded_ = false;

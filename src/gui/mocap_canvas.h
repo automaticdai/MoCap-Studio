@@ -9,6 +9,7 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QKeyEvent>
+#include <QLabel>
 #include <vector>
 #include "core/types.h"
 #include "core/skeleton_definition.h"
@@ -26,6 +27,7 @@ public slots:
     void onSkeletonUpdate(const std::vector<SkeletonPose>& skeletons);
     void setRenderLayerVisible(const QString& layer, bool visible);
     void frameSelection();
+    void setStatusMessage(const QString& message);
 
 signals:
     void personSelected(int global_person_id);
@@ -65,6 +67,8 @@ private:
 
     // Shader
     QOpenGLShaderProgram* shader_ = nullptr;
+    QLabel* status_message_ = nullptr;
+    bool gl_ready_ = false;
 
     // Geometry buffers
     QOpenGLVertexArrayObject vao_;

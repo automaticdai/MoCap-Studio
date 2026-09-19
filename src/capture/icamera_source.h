@@ -15,6 +15,8 @@ public:
     virtual bool isOpened() const = 0;
 
     virtual bool grabFrame(CapturedFrame& out, int timeout_ms = 100) = 0;
+    virtual bool prefersLatestFrame() const { return false; }
+    virtual bool isLive() const { return true; }
 
     virtual CameraIntrinsics intrinsics() const = 0;
     virtual std::string id() const = 0;

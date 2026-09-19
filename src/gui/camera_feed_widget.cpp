@@ -2,8 +2,38 @@
 #include <QPainter>
 #include <QImage>
 #include <opencv2/imgproc.hpp>
+#include <algorithm>
 
 namespace mocap {
+
+namespace {
+// Painting into a stable viewport avoids QLabel's pixmap size hint feeding
+// back into the dock layout (each frame previously added the label border).
+class FeedLabel : public QLabel {
+public:
+    using QLabel::QLabel;
+    QPixmap image;
+    QString camera_id;
+    QSize sizeHint() const override { return {320, 180}; }
+    QSize minimumSizeHint() const override { return {160, 100}; }
+    void paintEvent(QPaintEvent* event) override {
+        QLabel::paintEvent(event);
+        if (image.isNull()) return;
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        const QRect bounds = contentsRect().adjusted(1, 1, -1, -1);
+        QSize scaled = image.size();
+        scaled.scale(bounds.size(), Qt::KeepAspectRatio);
+        QRect target(QPoint(), scaled);
+        target.moveCenter(bounds.center());
+        painter.drawPixmap(target, image);
+        painter.fillRect(8, 8, painter.fontMetrics().horizontalAdvance(camera_id) + 12,
+                         24, QColor(0, 0, 0, 160));
+        painter.setPen(Qt::white);
+        painter.drawText(14, 25, camera_id);
+    }
+};
+}
 
 const std::vector<std::pair<int, int>> CameraFeedWidget::SKELETON_CONNECTIONS = {
     {0, 1}, {1, 2}, {2, 3}, {3, 4}, {1, 5}, {5, 6}, {6, 7},
@@ -26,20 +56,9 @@ void CameraFeedWidget::onFrameSet(std::shared_ptr<FrameSet> frameSet) {
     if (!frameSet) return;
 
     for (const auto& frame : frameSet->frames) {
-        QLabel* label = getOrCreateLabel(frame.camera_id);
-
-        QPixmap pixmap = matToPixmap(frame.image);
-
-        // Draw keypoint overlay if available
-        if (show_keypoint_overlay_) {
-            auto it = latest_poses_.find(frame.camera_id);
-            if (it != latest_poses_.end()) {
-                drawKeypointsOverlay(pixmap, it->second);
-            }
-        }
-
-        // Scale to fit label
-        label->setPixmap(pixmap.scaled(label->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        if (frame.image.empty()) continue;
+        latest_images_[frame.camera_id] = matToPixmap(frame.image);
+        refreshPreview(frame.camera_id);
     }
 }
 
@@ -48,11 +67,51 @@ void CameraFeedWidget::onPoses2D(
 {
     for (const auto& [cam_id, cam_poses] : poses) {
         latest_poses_[cam_id] = cam_poses;
+        refreshPreview(cam_id);
     }
 }
 
 void CameraFeedWidget::setKeypointOverlayEnabled(bool enabled) {
     show_keypoint_overlay_ = enabled;
+    for (const auto& entry : latest_images_) refreshPreview(entry.first);
+}
+
+void CameraFeedWidget::refreshPreview(const std::string& camera_id) {
+    auto* label = static_cast<FeedLabel*>(getOrCreateLabel(camera_id));
+    auto image = latest_images_.find(camera_id);
+    if (image == latest_images_.end()) return;
+    QPixmap pixmap = image->second;
+    const auto poses = latest_poses_.find(camera_id);
+    if (show_keypoint_overlay_ && poses != latest_poses_.end())
+        drawKeypointsOverlay(pixmap, poses->second);
+    label->setText({});
+    label->image = std::move(pixmap);
+    label->update();
+}
+
+void CameraFeedWidget::setCameras(const std::vector<std::string>& camera_ids) {
+    while (!camera_labels_.empty()) {
+        const auto id = camera_labels_.begin()->first;
+        removeLabel(id);
+    }
+    for (const auto& id : camera_ids) setCameraStatus(id, "Connecting…");
+    if (camera_ids.empty()) {
+        setToolTip("Add a camera from Cameras → Camera Setup.");
+    } else setToolTip({});
+}
+
+void CameraFeedWidget::setCameraStatus(const std::string& camera_id, const QString& status) {
+    latest_images_.erase(camera_id);
+    latest_poses_.erase(camera_id);
+    auto* label = static_cast<FeedLabel*>(getOrCreateLabel(camera_id));
+    label->image = {};
+    label->setText(QString::fromStdString(camera_id) + "\n" + status);
+    label->update();
+}
+
+void CameraFeedWidget::clearOverlays() {
+    latest_poses_.clear();
+    for (const auto& entry : latest_images_) refreshPreview(entry.first);
 }
 
 bool CameraFeedWidget::keypointOverlayEnabled() const {
@@ -65,9 +124,11 @@ QLabel* CameraFeedWidget::getOrCreateLabel(const std::string& camera_id) {
         return it->second;
     }
 
-    auto* label = new QLabel(this);
+    auto* label = new FeedLabel(this);
+    label->camera_id = QString::fromStdString(camera_id);
+    label->setObjectName("cameraPreview_" + label->camera_id);
     label->setAlignment(Qt::AlignCenter);
-    label->setMinimumSize(240, 180);
+    label->setMinimumSize(160, 100);
     label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     label->setStyleSheet("QLabel { background-color: #1a1a2e; border: 1px solid #333; }");
     label->setText(QString::fromStdString(camera_id));
@@ -88,6 +149,7 @@ void CameraFeedWidget::removeLabel(const std::string& camera_id) {
     delete it->second;
     camera_labels_.erase(it);
     latest_poses_.erase(camera_id);
+    latest_images_.erase(camera_id);
 }
 
 QPixmap CameraFeedWidget::matToPixmap(const cv::Mat& mat) {
@@ -146,7 +208,7 @@ void CameraFeedWidget::drawKeypointsOverlay(QPixmap& pixmap, const std::vector<R
         for (const auto& kp : pose.keypoints) {
             if (kp.conf < 0.3f) continue;
 
-            int alpha = static_cast<int>(kp.conf * 255);
+            int alpha = static_cast<int>(std::clamp(kp.conf, 0.0f, 1.0f) * 255);
             QColor kpColor = color;
             kpColor.setAlpha(alpha);
 

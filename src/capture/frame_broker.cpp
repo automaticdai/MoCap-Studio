@@ -15,34 +15,34 @@ FrameBroker::~FrameBroker() {
 
 void FrameBroker::addCamera(std::shared_ptr<ICameraSource> source) {
     std::lock_guard<std::mutex> lock(slots_mutex_);
-    auto slot = std::make_unique<CameraSlot>();
+    auto slot = std::make_shared<CameraSlot>();
     slot->source = std::move(source);
     camera_slots_.push_back(std::move(slot));
 }
 
 void FrameBroker::removeCamera(const std::string& camera_id) {
     std::lock_guard<std::mutex> lock(slots_mutex_);
-    auto it = std::remove_if(camera_slots_.begin(), camera_slots_.end(),
-        [&](const std::unique_ptr<CameraSlot>& slot) {
-            return slot->source->id() == camera_id;
-        });
-
-    for (auto i = it; i != camera_slots_.end(); ++i) {
-        (*i)->running = false;
-        if ((*i)->thread.joinable()) {
-            (*i)->buffer_cv.notify_all();
-            (*i)->thread.join();
+    for (auto it = camera_slots_.begin(); it != camera_slots_.end();) {
+        if ((*it)->source->id() != camera_id) { ++it; continue; }
+        (*it)->running = false;
+        (*it)->buffer_cv.notify_all();
+        if ((*it)->thread.joinable()) {
+            (*it)->thread.join();
         }
+        it = camera_slots_.erase(it);
     }
-    camera_slots_.erase(it, camera_slots_.end());
 }
 
-void FrameBroker::start() {
+void FrameBroker::start(bool preview_only) {
     if (running_.load()) return;
     running_ = true;
 
     std::lock_guard<std::mutex> lock(slots_mutex_);
+    latest_delivery_ = std::any_of(camera_slots_.begin(), camera_slots_.end(),
+        [](const auto& slot) { return slot->source->prefersLatestFrame(); });
     for (auto& slot : camera_slots_) {
+        slot->buffer.clear();
+        if (preview_only && !slot->source->isLive()) continue;
         slot->running = true;
         slot->thread = std::thread(&FrameBroker::cameraThreadFunc, this, slot.get());
     }
@@ -55,14 +55,20 @@ void FrameBroker::stop() {
     if (!running_.load()) return;
     running_ = false;
 
-    std::lock_guard<std::mutex> lock(slots_mutex_);
+    std::unique_lock<std::mutex> lock(slots_mutex_);
     for (auto& slot : camera_slots_) {
         slot->running = false;
         slot->buffer_cv.notify_all();
         if (slot->thread.joinable()) slot->thread.join();
     }
 
+    // The sync thread may be waiting for slots_mutex_.
+    lock.unlock();
     if (sync_thread_.joinable()) sync_thread_.join();
+    {
+        std::lock_guard<std::mutex> delivery_lock(delivery_mutex_);
+        pending_frame_set_.reset();
+    }
     spdlog::info("FrameBroker stopped");
 }
 
@@ -72,7 +78,8 @@ bool FrameBroker::isRunning() const {
 
 int FrameBroker::cameraCount() const {
     std::lock_guard<std::mutex> lock(slots_mutex_);
-    return static_cast<int>(camera_slots_.size());
+    return static_cast<int>(std::count_if(camera_slots_.begin(), camera_slots_.end(),
+        [](const auto& slot) { return slot->source->isOpened(); }));
 }
 
 void FrameBroker::setMaxSyncSkewMs(double ms) {
@@ -88,6 +95,7 @@ void FrameBroker::cameraThreadFunc(CameraSlot* slot) {
         CapturedFrame frame;
         if (slot->source->grabFrame(frame, 100)) {
             std::lock_guard<std::mutex> lock(slot->buffer_mutex);
+            if (slot->source->prefersLatestFrame()) slot->buffer.clear();
             slot->buffer.push_back(std::move(frame));
             while (static_cast<int>(slot->buffer.size()) > BUFFER_SIZE) {
                 slot->buffer.pop_front();
@@ -109,14 +117,19 @@ void FrameBroker::syncThreadFunc() {
         std::vector<CapturedFrame> collected;
         bool all_available = true;
 
+        std::vector<std::shared_ptr<CameraSlot>> camera_snapshot;
         {
             std::lock_guard<std::mutex> lock(slots_mutex_);
-            if (camera_slots_.empty()) {
+            camera_snapshot = camera_slots_;
+        }
+        {
+            if (camera_snapshot.empty()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
 
-            for (auto& slot : camera_slots_) {
+            for (auto& slot : camera_snapshot) {
+                if (!slot->running) continue;
                 std::unique_lock<std::mutex> buf_lock(slot->buffer_mutex);
                 if (slot->buffer.empty()) {
                     // Wait briefly for a frame to arrive
@@ -132,6 +145,7 @@ void FrameBroker::syncThreadFunc() {
         }
 
         if (!all_available || collected.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
@@ -150,13 +164,33 @@ void FrameBroker::syncThreadFunc() {
             auto fs = std::make_shared<FrameSet>();
             fs->timestamp = (min_ts + max_ts) / 2.0;
             fs->frames = std::move(collected);
-            emit frameSetReady(fs);
+            publishFrameSet(std::move(fs));
         } else {
             spdlog::debug("Frame sync skew too large: {:.1f} ms (max: {:.1f} ms)",
                          skew_ms, max_sync_skew_ms_);
             // Discard oldest frames and retry on next iteration
         }
     }
+}
+
+void FrameBroker::publishFrameSet(std::shared_ptr<FrameSet> frame_set) {
+    if (!latest_delivery_) {
+        emit frameSetReady(std::move(frame_set));
+        return;
+    }
+    std::lock_guard<std::mutex> lock(delivery_mutex_);
+    pending_frame_set_ = std::move(frame_set);
+    if (delivery_queued_) return;
+    delivery_queued_ = true;
+    QMetaObject::invokeMethod(this, [this] {
+        std::shared_ptr<FrameSet> latest;
+        {
+            std::lock_guard<std::mutex> delivery_lock(delivery_mutex_);
+            latest = std::move(pending_frame_set_);
+            delivery_queued_ = false;
+        }
+        if (running_ && latest) emit frameSetReady(std::move(latest));
+    }, Qt::QueuedConnection);
 }
 
 }  // namespace mocap

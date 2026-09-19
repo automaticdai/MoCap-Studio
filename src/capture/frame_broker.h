@@ -22,7 +22,7 @@ public:
     void addCamera(std::shared_ptr<ICameraSource> source);
     void removeCamera(const std::string& camera_id);
 
-    void start();
+    void start(bool preview_only = false);
     void stop();
 
     bool isRunning() const;
@@ -50,8 +50,16 @@ private:
 
     void cameraThreadFunc(CameraSlot* slot);
     void syncThreadFunc();
+    void publishFrameSet(std::shared_ptr<FrameSet> frame_set);
 
-    std::vector<std::unique_ptr<CameraSlot>> camera_slots_;
+    // At most one delivery is queued on the GUI thread. Slow inference must
+    // not build an unbounded queue of stale video frames.
+    std::mutex delivery_mutex_;
+    std::shared_ptr<FrameSet> pending_frame_set_;
+    bool delivery_queued_ = false;
+    bool latest_delivery_ = false;
+
+    std::vector<std::shared_ptr<CameraSlot>> camera_slots_;
     std::thread sync_thread_;
     std::atomic<bool> running_{false};
     double max_sync_skew_ms_ = 5.0;

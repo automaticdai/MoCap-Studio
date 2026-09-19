@@ -141,7 +141,7 @@ cameras:
 
 pose_estimation:
   backend: "onnxruntime"
-  model: "rtmpose_l_body25.onnx"
+  model: "resources/models/rtmpose-m-wholebody.onnx"
   device: "cuda:0"
   detection_threshold: 0.5
   keypoint_threshold: 0.3

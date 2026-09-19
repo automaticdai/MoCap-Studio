@@ -13,13 +13,16 @@ namespace mocap {
 
 std::string SessionManager::createSession(
     const std::string& base_dir, double fps,
-    const std::vector<std::string>& camera_ids
+    const std::vector<std::string>& camera_ids, const std::string& name
 ) {
     std::string timestamp = currentTimestamp();
     std::string dir_name = "session_" + timestamp;
     session_dir_ = (fs::path(base_dir) / dir_name).string();
+    // Two sessions created within one second must not overwrite each other.
+    for (int suffix = 1; fs::exists(session_dir_); ++suffix)
+        session_dir_ = (fs::path(base_dir) / (dir_name + "_" + std::to_string(suffix))).string();
 
-    meta_.name = dir_name;
+    meta_.name = name.empty() ? dir_name : name;
     meta_.created_at = timestamp;
     meta_.fps = fps;
     meta_.duration = 0.0;
@@ -40,10 +43,12 @@ bool SessionManager::openSession(const std::string& session_dir) {
         return false;
     }
 
-    session_dir_ = session_dir;
     try {
-        loadMetadata();
-        open_ = true;
+        SessionManager candidate;
+        candidate.session_dir_ = session_dir;
+        candidate.loadMetadata();
+        candidate.open_ = true;
+        *this = std::move(candidate);
         spdlog::info("Opened session: {}", session_dir_);
         return true;
     } catch (const std::exception& e) {

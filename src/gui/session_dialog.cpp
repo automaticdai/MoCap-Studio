@@ -51,6 +51,10 @@ double SessionDialog::recordingFps() const {
     return fps_spin_ ? fps_spin_->value() : 60.0;
 }
 
+void SessionDialog::setRecordingFps(double fps) {
+    if (fps_spin_) fps_spin_->setValue(fps);
+}
+
 QString SessionDialog::selectedSessionPath() const {
     return selected_session_path_;
 }

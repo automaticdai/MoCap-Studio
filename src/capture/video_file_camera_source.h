@@ -7,6 +7,7 @@ namespace mocap {
 
 class VideoFileCameraSource : public ICameraSource {
 public:
+    bool isLive() const override { return false; }
     VideoFileCameraSource() = default;
     ~VideoFileCameraSource() override;
 

@@ -130,6 +130,11 @@ void TimelineWidget::onPlayClicked() {
 }
 
 void TimelineWidget::onStopClicked() {
+    resetTransport();
+    emit stopRequested();
+}
+
+void TimelineWidget::resetTransport() {
     is_playing_ = false;
     is_recording_ = false;
     play_btn_->setText("Play");
@@ -142,7 +147,6 @@ void TimelineWidget::onStopClicked() {
         "QPushButton { background-color: #6e2a2a; color: white; border: 1px solid #8e3a3a; border-radius: 3px; padding: 4px; }"
         "QPushButton:hover { background-color: #8e3a3a; }"
     );
-    emit stopRequested();
 }
 
 void TimelineWidget::onRecordClicked() {

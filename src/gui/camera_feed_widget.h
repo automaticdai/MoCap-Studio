@@ -14,6 +14,9 @@ class CameraFeedWidget : public QWidget {
     Q_OBJECT
 public:
     explicit CameraFeedWidget(QWidget* parent = nullptr);
+    void setCameras(const std::vector<std::string>& camera_ids);
+    void setCameraStatus(const std::string& camera_id, const QString& status);
+    void clearOverlays();
 
 public slots:
     void onFrameSet(std::shared_ptr<FrameSet> frameSet);
@@ -26,6 +29,8 @@ private:
     QGridLayout* grid_layout_;
     std::unordered_map<std::string, QLabel*> camera_labels_;
     std::unordered_map<std::string, std::vector<Raw2DPose>> latest_poses_;
+    std::unordered_map<std::string, QPixmap> latest_images_;
+    void refreshPreview(const std::string& camera_id);
     bool show_keypoint_overlay_ = true;
     int max_columns_ = 1;
 

@@ -1,6 +1,9 @@
 #include "gui/mocap_canvas.h"
 #include <cmath>
 #include <algorithm>
+#include <QVBoxLayout>
+#include <QSurfaceFormat>
+#include <spdlog/spdlog.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -12,8 +15,23 @@ MoCapCanvas::MoCapCanvas(QWidget* parent)
     : QOpenGLWidget(parent)
     , vbo_(QOpenGLBuffer::VertexBuffer)
 {
+    QSurfaceFormat format;
+    format.setVersion(3, 3);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    format.setDepthBufferSize(24);
+    setFormat(format);
+    setMinimumSize(360, 240);
     setFocusPolicy(Qt::StrongFocus);
     skeleton_def_ = SkeletonDefinition::defaultBody25();
+    auto* layout = new QVBoxLayout(this);
+    status_message_ = new QLabel(this);
+    status_message_->setObjectName("reconstructionStatus");
+    status_message_->setWordWrap(true);
+    status_message_->setStyleSheet("QLabel { color: #ddd; background: rgba(25,25,32,210); padding: 12px; }");
+    status_message_->setAttribute(Qt::WA_TransparentForMouseEvents);
+    layout->addWidget(status_message_);
+    layout->addStretch();
+    setStatusMessage("Add cameras to begin. 3D reconstruction requires at least two calibrated views.");
 }
 
 MoCapCanvas::~MoCapCanvas() {
@@ -39,7 +57,10 @@ QMatrix4x4 MoCapCanvas::OrbitCamera::viewMatrix() const {
 }
 
 void MoCapCanvas::initializeGL() {
-    initializeOpenGLFunctions();
+    if (!initializeOpenGLFunctions()) {
+        setStatusMessage("3D rendering unavailable: OpenGL 3.3 is required.");
+        return;
+    }
 
     glClearColor(0.12f, 0.12f, 0.15f, 1.0f);
     glEnable(GL_DEPTH_TEST);
@@ -71,19 +92,24 @@ void MoCapCanvas::initializeGL() {
             FragColor = vColor;
         }
     )");
-    shader_->link();
+    if (!shader_->link()) {
+        spdlog::error("3D shader failed: {}", shader_->log().toStdString());
+        setStatusMessage("3D rendering failed to initialize.");
+        return;
+    }
 
-    vao_.create();
-    vbo_.create();
+    gl_ready_ = vao_.create() && vbo_.create();
 }
 
 void MoCapCanvas::resizeGL(int w, int h) {
+    if (!gl_ready_) return;
     glViewport(0, 0, w, h);
     projection_.setToIdentity();
     projection_.perspective(45.0f, static_cast<float>(w) / std::max(h, 1), 0.1f, 100.0f);
 }
 
 void MoCapCanvas::paintGL() {
+    if (!gl_ready_) return;
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     shader_->bind();
@@ -100,7 +126,6 @@ void MoCapCanvas::paintGL() {
     vao_.release();
     shader_->release();
 
-    update();  // continuous repaint
 }
 
 void MoCapCanvas::drawGrid() {
@@ -234,11 +259,20 @@ QColor MoCapCanvas::colorForPerson(int global_person_id) const {
 // --- Slots ---
 
 void MoCapCanvas::onPose3DUpdate(const std::vector<Pose3D>& poses) {
+    const bool first_pose = current_poses_.empty() && !poses.empty();
     current_poses_ = poses;
+    if (first_pose) frameSelection();
+    update();
 }
 
 void MoCapCanvas::onSkeletonUpdate(const std::vector<SkeletonPose>& skeletons) {
     current_skeletons_ = skeletons;
+    update();
+}
+
+void MoCapCanvas::setStatusMessage(const QString& message) {
+    status_message_->setText(message);
+    status_message_->setVisible(!message.isEmpty());
 }
 
 void MoCapCanvas::setRenderLayerVisible(const QString& layer, bool visible) {
@@ -246,24 +280,30 @@ void MoCapCanvas::setRenderLayerVisible(const QString& layer, bool visible) {
     else if (layer == "markers") layers_.markers = visible;
     else if (layer == "skeleton") layers_.skeleton = visible;
     else if (layer == "trails") layers_.trails = visible;
+    update();
 }
 
 void MoCapCanvas::frameSelection() {
-    if (selected_person_ < 0 || current_poses_.empty()) {
+    if (current_poses_.empty()) {
         camera_.target = QVector3D(0, 1, 0);
         camera_.distance = 5.0f;
+        update();
         return;
     }
 
     for (const auto& pose : current_poses_) {
-        if (pose.global_person_id == selected_person_ && !pose.markers.empty()) {
+        if ((selected_person_ < 0 || pose.global_person_id == selected_person_) && !pose.markers.empty()) {
             QVector3D center(0, 0, 0);
             for (const auto& m : pose.markers) {
                 center += QVector3D(m.position.x(), m.position.y(), m.position.z());
             }
             center /= static_cast<float>(pose.markers.size());
             camera_.target = center;
-            camera_.distance = 3.0f;
+            float radius = 0.5f;
+            for (const auto& m : pose.markers)
+                radius = std::max(radius, (QVector3D(m.position.x(), m.position.y(), m.position.z()) - center).length());
+            camera_.distance = std::max(2.0f, radius * 3.0f);
+            update();
             break;
         }
     }
@@ -295,6 +335,7 @@ void MoCapCanvas::mousePressEvent(QMouseEvent* event) {
             emit personSelected(selected_person_);
         }
     }
+    update();
 }
 
 void MoCapCanvas::mouseMoveEvent(QMouseEvent* event) {
@@ -313,6 +354,7 @@ void MoCapCanvas::mouseMoveEvent(QMouseEvent* event) {
         camera_.target -= right * delta.x() * scale;
         camera_.target += up * delta.y() * scale;
     }
+    update();
 }
 
 void MoCapCanvas::mouseReleaseEvent(QMouseEvent* /*event*/) {
@@ -324,6 +366,7 @@ void MoCapCanvas::wheelEvent(QWheelEvent* event) {
     float delta = event->angleDelta().y() / 120.0f;
     camera_.distance *= (1.0f - delta * 0.1f);
     camera_.distance = std::clamp(camera_.distance, 0.5f, 50.0f);
+    update();
 }
 
 void MoCapCanvas::keyPressEvent(QKeyEvent* event) {
@@ -343,6 +386,7 @@ void MoCapCanvas::keyPressEvent(QKeyEvent* event) {
         default:
             QOpenGLWidget::keyPressEvent(event);
     }
+    update();
 }
 
 }  // namespace mocap

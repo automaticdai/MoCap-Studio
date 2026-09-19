@@ -24,6 +24,7 @@
 #include <QDockWidget>
 #include <QMessageBox>
 #include <QFileDialog>
+#include <QSettings>
 #include <spdlog/spdlog.h>
 #include <filesystem>
 
@@ -59,6 +60,7 @@ MainWindow::~MainWindow() {
     if (capturing_) {
         onStopCapture();
     }
+    frame_broker_->stop();
 }
 
 void MainWindow::setupMenuBar() {
@@ -93,6 +95,10 @@ void MainWindow::setupStatusBar() {
     status_cameras_ = new QLabel("Cameras: 0");
     status_persons_ = new QLabel("Persons: 0");
     status_fps_ = new QLabel("FPS: 0");
+    status_session_ = new QLabel("No session — create or open a session to capture");
+    status_session_->setObjectName("sessionStatus");
+    status_session_->setMaximumWidth(420);
+    statusBar()->addPermanentWidget(status_session_);
 
     statusBar()->addPermanentWidget(status_cameras_);
     statusBar()->addPermanentWidget(status_persons_);
@@ -143,7 +149,13 @@ void MainWindow::setupDockWidgets() {
 void MainWindow::setupConnections() {
     // Frame broker → processing pipeline
     connect(frame_broker_.get(), &FrameBroker::frameSetReady,
-            this, &MainWindow::onFrameSetReady, Qt::QueuedConnection);
+            this, &MainWindow::onFrameSetReady);
+    connect(frame_broker_.get(), &FrameBroker::cameraError, this,
+        [this](const QString& id, const QString& error) {
+            camera_feed_widget_->setCameraStatus(id.toStdString(), error);
+            statusBar()->showMessage(id + ": " + error);
+            updateReconstructionStatus();
+        });
 
     // Canvas → inspector (person/joint selection)
     connect(mocap_canvas_, &MoCapCanvas::personSelected,
@@ -211,6 +223,10 @@ void MainWindow::loadConfig(const std::string& path) {
 }
 
 void MainWindow::initializeCamerasFromConfig() {
+    std::vector<std::string> ids;
+    for (const auto& cam : config_.cameras) ids.push_back(cam.id);
+    camera_feed_widget_->setCameras(ids);
+    std::vector<Triangulator::CameraView> views;
     for (const auto& cam_cfg : config_.cameras) {
         std::shared_ptr<ICameraSource> source;
 
@@ -225,22 +241,102 @@ void MainWindow::initializeCamerasFromConfig() {
             source = video;
         } else {
             spdlog::warn("Unknown camera type: {}", cam_cfg.type);
+            camera_feed_widget_->setCameraStatus(cam_cfg.id, "Unsupported camera type");
             continue;
         }
 
         if (source->open(cam_cfg)) {
             frame_broker_->addCamera(source);
+            camera_feed_widget_->setCameraStatus(cam_cfg.id, "Connected — waiting for video");
+            if (!cam_cfg.intrinsics_file.empty() && !cam_cfg.extrinsics_file.empty()) {
+                try {
+                    auto intr = CameraIntrinsics::loadFromYaml(cam_cfg.intrinsics_file);
+                    auto extr = CameraExtrinsics::loadFromJson(cam_cfg.extrinsics_file);
+                    if (intr.fx <= 0 || intr.fy <= 0) throw std::runtime_error("Invalid focal length");
+                    views.push_back({intr, extr, cam_cfg.id});
+                } catch (const std::exception& e) {
+                    spdlog::warn("Calibration for {} unavailable: {}", cam_cfg.id, e.what());
+                }
+            }
             spdlog::info("Added camera: {} ({})", cam_cfg.id, cam_cfg.type);
         } else {
+            camera_feed_widget_->setCameraStatus(cam_cfg.id, "Connection failed — check camera settings");
             spdlog::error("Failed to open camera: {}", cam_cfg.id);
         }
     }
+    calibrated_camera_count_ = static_cast<int>(views.size());
+    triangulator_->setCameras(views);
+    status_cameras_->setText(QString("Cameras: %1").arg(frame_broker_->cameraCount()));
+    updateReconstructionStatus();
+    if (frame_broker_->cameraCount() > 0) frame_broker_->start(true);
 }
 
 // --- Session Management ---
 
+void MainWindow::resetSessionView() {
+    if (capturing_) onStopCapture();
+    onTimelinePause();
+    session_poses3d_.clear();
+    session_skeletons_.clear();
+    person_tracker_->reset();
+    camera_feed_widget_->clearOverlays();
+    mocap_canvas_->onPose3DUpdate({});
+    mocap_canvas_->onSkeletonUpdate({});
+    mocap_canvas_->frameSelection();
+    inspector_panel_->onPose3DUpdate({});
+    inspector_panel_->onSkeletonUpdate({});
+    inspector_panel_->onPersonSelected(-1);
+    playback_time_ = 0;
+    capture_start_time_ = 0;
+    frame_count_ = 0;
+    captured_frame_count_ = 0;
+    timeline_widget_->resetTransport();
+    timeline_widget_->setDuration(0);
+    timeline_widget_->setCurrentTime(0);
+    status_persons_->setText("Persons: 0");
+    status_fps_->setText("FPS: 0");
+    updateReconstructionStatus();
+}
+
+void MainWindow::updateSessionUi() {
+    const auto name = QString::fromStdString(session_manager_->metadata().name);
+    const auto path = QString::fromStdString(session_manager_->sessionDir());
+    setWindowTitle(name + " — MoCap Studio");
+    status_session_->setText("Session: " + name);
+    status_session_->setToolTip(path);
+    QSettings settings("MoCapStudio", "MoCapStudio");
+    auto recent = settings.value("recentSessions").toStringList();
+    recent.removeAll(path);
+    recent.prepend(path);
+    while (recent.size() > 10) recent.removeLast();
+    settings.setValue("recentSessions", recent);
+    updateReconstructionStatus();
+}
+
+void MainWindow::updateReconstructionStatus() {
+    const int required = std::max(2, config_.triangulation.min_views);
+    const int connected = frame_broker_->cameraCount();
+    if (connected < required) {
+        mocap_canvas_->setStatusMessage(QString(
+            "3D needs at least %1 calibrated cameras viewing the same person. "
+            "%2 connected. A single camera provides 2D poses in Camera Feeds during capture.")
+            .arg(required).arg(connected));
+    } else if (calibrated_camera_count_ < required) {
+        mocap_canvas_->setStatusMessage(QString(
+            "3D calibration incomplete: %1 of %2 required cameras have intrinsics and extrinsics. "
+            "Set both calibration files in Camera Setup.").arg(calibrated_camera_count_).arg(required));
+    } else if (!capturing_) {
+        mocap_canvas_->setStatusMessage("3D ready. Create or open a session, then start capture (F5).");
+    } else if (!pose_estimator_->isInitialized()) {
+        mocap_canvas_->setStatusMessage("Pose model unavailable. Check the model path in Settings.");
+    } else {
+        mocap_canvas_->setStatusMessage("Waiting for matching body joints in calibrated camera views.");
+    }
+}
+
 void MainWindow::onNewSession() {
     SessionDialog dialog(SessionDialog::NewSession, this);
+    dialog.setRecordingFps(config_.capture.target_fps);
     if (dialog.exec() != QDialog::Accepted) return;
 
     std::string name = dialog.sessionName().toStdString();
@@ -253,8 +349,17 @@ void MainWindow::onNewSession() {
         camera_ids.push_back(cam_cfg.id);
     }
 
-    std::string session_dir = session_manager_->createSession(dir, fps, camera_ids);
+    resetSessionView();
+    std::string session_dir;
+    try {
+        session_dir = session_manager_->createSession(dir, fps, camera_ids, name);
+    } catch (const std::exception& e) {
+        QMessageBox::warning(this, "New Session", QString::fromUtf8(e.what()));
+        return;
+    }
     config_.capture.target_fps = fps;
+    timeline_widget_->setFrameRate(fps);
+    updateSessionUi();
 
     statusBar()->showMessage("Created session: " +
                              QString::fromStdString(session_dir));
@@ -268,12 +373,15 @@ void MainWindow::onOpenSession() {
     std::string path = dialog.selectedSessionPath().toStdString();
     if (path.empty()) return;
 
+    resetSessionView();
     if (session_manager_->openSession(path)) {
         auto meta = session_manager_->metadata();
         statusBar()->showMessage("Opened session: " + QString::fromStdString(path));
 
         timeline_widget_->setDuration(meta.duration);
         timeline_widget_->setFrameRate(meta.fps);
+        config_.capture.target_fps = meta.fps;
+        updateSessionUi();
 
         loadSessionData();
         spdlog::info("Opened session: {} ({} frames, {:.1f}s)",
@@ -285,6 +393,8 @@ void MainWindow::onOpenSession() {
 
 void MainWindow::loadSessionData() {
     if (!session_manager_->isOpen()) return;
+    session_poses3d_.clear();
+    session_skeletons_.clear();
 
     std::string data_dir = session_manager_->dataDir();
 
@@ -323,6 +433,7 @@ void MainWindow::displayFrameAtTime(double time_seconds) {
             }
         }
         mocap_canvas_->onPose3DUpdate(it->second);
+        if (!it->second.empty()) mocap_canvas_->setStatusMessage({});
         inspector_panel_->onPose3DUpdate(it->second);
     }
 
@@ -354,6 +465,11 @@ void MainWindow::onStartCapture() {
                                  "Please create or open a session first.");
         return;
     }
+    if (frame_broker_->cameraCount() == 0) {
+        statusBar()->showMessage("No connected cameras. Add a camera from Camera Setup.");
+        return;
+    }
+    onTimelinePause();
 
     // Initialize pose estimator if not ready
     if (!pose_estimator_->isInitialized()) {
@@ -365,10 +481,14 @@ void MainWindow::onStartCapture() {
         }
     }
 
+    frame_broker_->stop();
     frame_broker_->start();
     capturing_ = true;
     frame_count_ = 0;
     capture_start_time_ = 0.0;
+    capture_timestamp_origin_ = -1.0;
+    captured_frame_count_ = 0;
+    updateReconstructionStatus();
 
     statusBar()->showMessage("Capturing...");
     spdlog::info("Capture started");
@@ -377,9 +497,10 @@ void MainWindow::onStartCapture() {
 void MainWindow::onStopCapture() {
     if (!capturing_) return;
 
-    frame_broker_->stop();
     capturing_ = false;
     recording_ = false;
+    frame_broker_->stop();
+    if (frame_broker_->cameraCount() > 0) frame_broker_->start(true);
 
     // Close recording writers
     if (raw2d_writer_) { raw2d_writer_->close(); raw2d_writer_.reset(); }
@@ -388,26 +509,30 @@ void MainWindow::onStopCapture() {
 
     // Update session metadata
     if (session_manager_->isOpen()) {
-        session_manager_->setFrameCount(frame_count_);
+        session_manager_->setFrameCount(captured_frame_count_);
         session_manager_->setDuration(capture_start_time_);
         session_manager_->saveMetadata();
     }
 
-    statusBar()->showMessage("Capture stopped");
-    spdlog::info("Capture stopped ({} frames)", frame_count_);
+    camera_feed_widget_->clearOverlays();
+    timeline_widget_->resetTransport();
+    statusBar()->showMessage("Capture stopped — camera preview remains live");
+    spdlog::info("Capture stopped ({} frames)", captured_frame_count_);
 }
 
 // --- Pipeline Processing ---
 
 void MainWindow::onFrameSetReady(std::shared_ptr<FrameSet> frameSet) {
+    camera_feed_widget_->onFrameSet(frameSet);
+    if (!capturing_) return;
     frame_count_++;
+    captured_frame_count_++;
+    if (capture_timestamp_origin_ < 0) capture_timestamp_origin_ = frameSet->timestamp;
+    frameSet->timestamp -= capture_timestamp_origin_;
     processFrameSet(frameSet);
 }
 
 void MainWindow::processFrameSet(std::shared_ptr<FrameSet> frameSet) {
-    // Update camera feeds
-    camera_feed_widget_->onFrameSet(frameSet);
-
     // Run 2D pose estimation on each camera
     std::vector<std::pair<std::string, std::vector<Raw2DPose>>> all_poses;
     for (const auto& frame : frameSet->frames) {
@@ -427,6 +552,8 @@ void MainWindow::processFrameSet(std::shared_ptr<FrameSet> frameSet) {
 
     // Triangulate 3D positions
     auto poses3d = triangulator_->triangulate(tracked, frameSet->timestamp);
+    if (poses3d.empty()) updateReconstructionStatus();
+    else mocap_canvas_->setStatusMessage({});
 
     // Apply temporal filtering to each marker
     // (In a full implementation, maintain per-marker filter state)
@@ -444,6 +571,7 @@ void MainWindow::processFrameSet(std::shared_ptr<FrameSet> frameSet) {
 
     // Update timeline
     capture_start_time_ = frameSet->timestamp;
+    timeline_widget_->setDuration(capture_start_time_);
     timeline_widget_->setCurrentTime(frameSet->timestamp);
 
     // Update person count in status bar
@@ -623,6 +751,7 @@ void MainWindow::onCameraSetup() {
     if (dialog.exec() != QDialog::Accepted) return;
 
     auto new_cameras = dialog.result();
+    frame_broker_->stop();
 
     // Remove all existing cameras from broker
     for (const auto& cam : config_.cameras) {
@@ -652,28 +781,36 @@ void MainWindow::onCalibrate() {
     // camera devices for its lifetime.
     const bool was_capturing = capturing_;
     if (was_capturing) onStopCapture();
+    frame_broker_->stop();
+    for (const auto& cam : config_.cameras) frame_broker_->removeCamera(cam.id);
 
-    CalibrationWizard wizard(config_.cameras, this);
-    if (wizard.exec() == QDialog::Accepted) {
-        const auto intrinsics = wizard.intrinsicsResults();
-        const auto& selected = wizard.selectedCameraIndices();
+    {
+        CalibrationWizard wizard(config_.cameras, this);
+        if (wizard.exec() == QDialog::Accepted) {
+            const auto intrinsics = wizard.intrinsicsResults();
+            const auto& selected = wizard.selectedCameraIndices();
 
-        if (session_manager_->isOpen() && !intrinsics.empty()) {
-            const std::string calib_dir = session_manager_->calibrationDir();
-            for (size_t slot = 0; slot < intrinsics.size(); ++slot) {
-                if (intrinsics[slot].image_size.area() == 0) continue;  // skipped/failed
-                const int cam_idx = selected[slot];
-                const std::string path = calib_dir + "/" +
-                                         config_.cameras[cam_idx].id + "_intrinsics.yaml";
-                intrinsics[slot].saveToYaml(path);
+            if (session_manager_->isOpen() && !intrinsics.empty()) {
+                const std::string calib_dir = session_manager_->calibrationDir();
+                for (size_t slot = 0; slot < intrinsics.size(); ++slot) {
+                    if (intrinsics[slot].image_size.area() == 0) continue;  // skipped/failed
+                    const int cam_idx = selected[slot];
+                    const std::string path = calib_dir + "/" +
+                                             config_.cameras[cam_idx].id + "_intrinsics.yaml";
+                    intrinsics[slot].saveToYaml(path);
+                    config_.cameras[cam_idx].intrinsics_file = path;
+                }
+                config_.save(config_path_);
+                spdlog::info("Saved calibration to {}", calib_dir);
+            } else if (!session_manager_->isOpen()) {
+                QMessageBox::information(this, "No Session",
+                                         "Calibration succeeded but no session is open. "
+                                         "Open or create a session to persist the results.");
             }
-            spdlog::info("Saved calibration to {}", calib_dir);
-        } else if (!session_manager_->isOpen()) {
-            QMessageBox::information(this, "No Session",
-                                     "Calibration succeeded but no session is open. "
-                                     "Open or create a session to persist the results.");
         }
-    }
+    } // Release wizard-owned cameras before reopening the live preview.
+    initializeCamerasFromConfig();
+    if (was_capturing) onStartCapture();
 }
 
 void MainWindow::onSettings() {

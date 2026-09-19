@@ -1,4 +1,5 @@
 #include "pose/onnx_pose_estimator.h"
+#include "pose/keypoint_layout.h"
 #include <opencv2/imgproc.hpp>
 #include <spdlog/spdlog.h>
 #include <numeric>
@@ -13,6 +14,20 @@
 namespace mocap {
 
 namespace {
+
+cv::Rect2f personRegion(const cv::Mat& image, int width, int height) {
+    // Match the official top-down affine transform, using the full frame as
+    // the single-person box until a person detector supplies tighter crops.
+    float crop_width = static_cast<float>(image.cols);
+    float crop_height = static_cast<float>(image.rows);
+    const float aspect = static_cast<float>(width) / height;
+    if (crop_width > crop_height * aspect) crop_height = crop_width / aspect;
+    else crop_width = crop_height * aspect;
+    crop_width *= 1.25f;
+    crop_height *= 1.25f;
+    return {(image.cols - crop_width) * 0.5f, (image.rows - crop_height) * 0.5f,
+            crop_width, crop_height};
+}
 
 struct ProviderAttempt {
     std::string name;  // "cuda", "dml", or "cpu"
@@ -63,6 +78,8 @@ OnnxPoseEstimator::OnnxPoseEstimator() = default;
 OnnxPoseEstimator::~OnnxPoseEstimator() = default;
 
 bool OnnxPoseEstimator::initialize(const std::string& model_path, const std::string& device) {
+    initialized_ = false;
+    session_.reset();
     try {
         env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "MoCapPose");
     } catch (const Ort::Exception& e) {
@@ -174,7 +191,11 @@ void OnnxPoseEstimator::warmup() {
 
 cv::Mat OnnxPoseEstimator::preprocess(const cv::Mat& image) {
     cv::Mat resized;
-    cv::resize(image, resized, cv::Size(input_width_, input_height_));
+    const auto region = personRegion(image, input_width_, input_height_);
+    const float sx = input_width_ / region.width;
+    const float sy = input_height_ / region.height;
+    cv::Matx23f transform(sx, 0, -region.x * sx, 0, sy, -region.y * sy);
+    cv::warpAffine(image, resized, transform, cv::Size(input_width_, input_height_));
 
     cv::Mat rgb;
     cv::cvtColor(resized, rgb, cv::COLOR_BGR2RGB);
@@ -203,8 +224,9 @@ cv::Mat OnnxPoseEstimator::preprocess(const cv::Mat& image) {
 std::vector<Raw2DPose> OnnxPoseEstimator::estimate(const cv::Mat& image) {
     if (!initialized_ || image.empty()) return {};
 
-    float scale_x = static_cast<float>(image.cols) / input_width_;
-    float scale_y = static_cast<float>(image.rows) / input_height_;
+    const auto region = personRegion(image, input_width_, input_height_);
+    float scale_x = region.width / input_width_;
+    float scale_y = region.height / input_height_;
 
     try {
         cv::Mat blob = preprocess(image);
@@ -240,7 +262,16 @@ std::vector<Raw2DPose> OnnxPoseEstimator::estimate(const cv::Mat& image) {
             inference_total_ms_ = 0.0;
         }
 
-        return postprocess(outputs, scale_x, scale_y);
+        auto poses = postprocess(outputs, scale_x, scale_y);
+        for (auto& pose : poses) {
+            for (auto& kp : pose.keypoints) {
+                kp.x += region.x;
+                kp.y += region.y;
+            }
+            pose.bbox.x += region.x;
+            pose.bbox.y += region.y;
+        }
+        return poses;
 
     } catch (const Ort::Exception& e) {
         spdlog::error("ONNX inference error: {}", e.what());
@@ -373,6 +404,11 @@ std::vector<Raw2DPose> OnnxPoseEstimator::decodeSimCC(
     int num_kp = static_cast<int>(x_shape[1]);
     int x_len = static_cast<int>(x_shape[2]);
     int y_len = static_cast<int>(y_shape[2]);
+    if (x_shape[0] != 1 || y_shape[0] != 1 || y_shape[1] != num_kp ||
+        x_len <= 0 || y_len <= 0 || (num_kp != 25 && num_kp != 133)) {
+        spdlog::error("Expected BODY_25 or COCO-WholeBody SimCC outputs");
+        return {};
+    }
 
     Raw2DPose pose;
     pose.person_id = 0;
@@ -405,13 +441,19 @@ std::vector<Raw2DPose> OnnxPoseEstimator::decodeSimCC(
 
         pose.keypoints.push_back(kp);
 
-        if (conf >= keypoint_threshold_) {
-            total_conf += conf;
+    }
+
+    if (num_kp == 133) pose.keypoints = wholebodyToBody25(pose.keypoints);
+    for (size_t k = 0; k < pose.keypoints.size(); ++k) {
+        auto& kp = pose.keypoints[k];
+        kp.name = BODY25_NAMES[k];
+        if (kp.conf >= keypoint_threshold_) {
+            total_conf += kp.conf;
             valid_count++;
-            min_x = std::min(min_x, img_x);
-            min_y = std::min(min_y, img_y);
-            max_x = std::max(max_x, img_x);
-            max_y = std::max(max_y, img_y);
+            min_x = std::min(min_x, kp.x);
+            min_y = std::min(min_y, kp.y);
+            max_x = std::max(max_x, kp.x);
+            max_y = std::max(max_y, kp.y);
         }
     }
 

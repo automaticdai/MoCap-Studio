@@ -25,7 +25,7 @@ struct CameraConfig {
 
 struct PoseEstimationConfig {
     std::string backend = "onnxruntime";
-    std::string model = "rtmpose_l_body25.onnx";
+    std::string model = "resources/models/rtmpose-m-wholebody.onnx";
     std::string device = "auto";  // "auto", "cuda", "cuda:N", "dml", "dml:N", "cpu"
     float detection_threshold = 0.5f;
     float keypoint_threshold = 0.3f;

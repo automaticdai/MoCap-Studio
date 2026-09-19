@@ -61,6 +61,9 @@ private:
 
     void processFrameSet(std::shared_ptr<FrameSet> frameSet);
     void initializeCamerasFromConfig();
+    void resetSessionView();
+    void updateSessionUi();
+    void updateReconstructionStatus();
     void runExport(const std::string& format, bool l1, bool l2, bool l3,
                    int start_frame, int end_frame, const std::string& output_dir);
 
@@ -96,6 +99,8 @@ private:
     QLabel* status_cameras_ = nullptr;
     QLabel* status_persons_ = nullptr;
     QLabel* status_fps_ = nullptr;
+    QLabel* status_session_ = nullptr;
+    int calibrated_camera_count_ = 0;
 
     // FPS tracking
     QTimer* fps_timer_ = nullptr;
@@ -113,6 +118,8 @@ private:
     bool capturing_ = false;
     bool recording_ = false;
     double capture_start_time_ = 0.0;
+    double capture_timestamp_origin_ = -1.0;
+    int captured_frame_count_ = 0;
 };
 
 }  // namespace mocap

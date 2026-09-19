@@ -19,6 +19,7 @@ namespace mocap {
 class SessionDialog : public QDialog {
     Q_OBJECT
 public:
+    void setRecordingFps(double fps);
     enum Mode { NewSession, OpenSession };
 
     explicit SessionDialog(Mode mode, QWidget* parent = nullptr);

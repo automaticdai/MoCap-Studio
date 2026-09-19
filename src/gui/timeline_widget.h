@@ -16,6 +16,7 @@ public:
     void setDuration(double seconds);
     void setCurrentTime(double seconds);
     void setFrameRate(double fps);
+    void resetTransport();
 
     double currentTime() const;
     double duration() const;

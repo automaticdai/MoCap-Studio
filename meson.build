@@ -189,6 +189,10 @@ if get_option('tests')
   gmock_dep = gtest_proj.get_variable('gmock_dep')
 
   test_names = [
+    'test_keypoint_layout',
+    'test_live_capture',
+    'test_frame_broker',
+    'test_gui_state',
     'test_types',
     'test_triangulation',
     'test_skeleton_solver',
@@ -205,6 +209,7 @@ if get_option('tests')
     exe = executable(t,
       files('tests/' + t + '.cpp'),
       dependencies : [mocap_dep, gtest_main_dep, gmock_dep])
-    test(t, exe, protocol : 'gtest')
+    test(t, exe, protocol : 'gtest',
+      env : t == 'test_gui_state' ? ['QT_QPA_PLATFORM=offscreen'] : [])
   endforeach
 endif
